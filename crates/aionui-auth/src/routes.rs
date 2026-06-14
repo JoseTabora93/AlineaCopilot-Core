@@ -856,8 +856,8 @@ async fn webui_generate_qr_token_handler(
 /// Endpoints:
 /// - `GET    /api/admin/users`                    — list all users
 /// - `POST   /api/admin/users`                    — create user (invite-only path)
-/// - `PATCH  /api/admin/users/:id`                — update role / is_active / display_name
-/// - `POST   /api/admin/users/:id/reset-password` — admin force-resets a password
+/// - `PATCH  /api/admin/users/{id}`                — update role / is_active / display_name
+/// - `POST   /api/admin/users/{id}/reset-password` — admin force-resets a password
 pub fn admin_routes(state: AuthRouterState) -> Router {
     let api_limiter = Arc::new(RateLimiter::api());
     let action_limiter = Arc::new(RateLimiter::authenticated_action());
@@ -877,9 +877,9 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
             "/api/admin/users",
             get(admin_list_users_handler).post(admin_create_user_handler),
         )
-        .route("/api/admin/users/:id", patch(admin_update_user_handler))
+        .route("/api/admin/users/{id}", patch(admin_update_user_handler))
         .route(
-            "/api/admin/users/:id/reset-password",
+            "/api/admin/users/{id}/reset-password",
             post(admin_reset_password_handler),
         )
         // require_admin runs inside auth — layers apply outermost-last
