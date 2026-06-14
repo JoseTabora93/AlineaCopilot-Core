@@ -55,8 +55,9 @@ pub use assistant::{
     UpdateAssistantRequest,
 };
 pub use auth::{
-    AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest,
-    RefreshResponse, RefreshTokenRequest, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
+    AdminCreateUserRequest, AdminResetPasswordRequest, AdminUpdateUserRequest, AuthStatusResponse,
+    ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest, RefreshResponse,
+    RefreshTokenRequest, RegisterRequest, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
     WebuiChangeUsernameResponse, WebuiGenerateQrTokenResponse, WebuiResetPasswordResponse, WsTokenResponse,
 };
 pub use channel::{

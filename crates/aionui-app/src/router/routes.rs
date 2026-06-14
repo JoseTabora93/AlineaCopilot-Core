@@ -18,13 +18,15 @@ use aionui_api_types::ErrorResponse;
 use aionui_assets::{AssetRouterState, asset_routes};
 use aionui_assistant::assistant_routes;
 use aionui_auth::{
-    AuthRouterState, AuthState, auth_middleware, auth_routes, csrf_middleware, security_headers_middleware,
+    AuthRouterState, AuthState, admin_routes, auth_middleware, auth_routes, csrf_middleware,
+    security_headers_middleware,
 };
 use aionui_channel::channel_routes;
 #[cfg(feature = "weixin")]
 use aionui_channel::weixin_login_route;
 use aionui_conversation::{conversation_ops_routes, conversation_routes};
 use aionui_cron::cron_routes;
+use aionui_db::SqliteSettingsRepository;
 use aionui_extension::{extension_routes, hub_routes, skill_routes};
 use aionui_file::file_routes;
 use aionui_mcp::mcp_routes;
@@ -133,6 +135,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let auth_state = AuthRouterState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
+        settings_repo: Arc::new(SqliteSettingsRepository::new(services.database.pool().clone())),
         cookie_config: services.cookie_config.clone(),
         qr_token_store: services.qr_token_store.clone(),
         local: services.local,
@@ -232,7 +235,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     let router = Router::new()
         .route("/health", get(health_check))
-        .merge(auth_routes(auth_state))
+        .merge(auth_routes(auth_state.clone()))
+        .merge(admin_routes(auth_state))
         .merge(system_authenticated)
         .merge(conversation_authenticated)
         .merge(conversation_ops_authenticated)

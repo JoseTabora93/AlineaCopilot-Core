@@ -50,10 +50,10 @@ pub use security::security_headers_middleware;
 pub use csrf::csrf_middleware;
 
 // Auth middleware
-pub use middleware::{AuthState, CurrentUser, auth_middleware, local_auth_middleware};
+pub use middleware::{AuthState, CurrentUser, auth_middleware, local_auth_middleware, require_admin_middleware};
 
 // QR token store
 pub use qr_token::QrTokenStore;
 
 // Routes
-pub use routes::{AuthRouterState, auth_routes};
+pub use routes::{AuthRouterState, admin_routes, auth_routes};

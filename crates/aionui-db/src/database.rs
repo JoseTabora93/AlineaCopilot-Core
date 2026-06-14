@@ -621,13 +621,14 @@ async fn align_reconciled_mcp_migration_checksum(conn: &mut sqlx::SqliteConnecti
 /// users upgrading from pre-M6 builds keep the same login username.
 async fn ensure_system_user(pool: &SqlitePool) -> Result<(), DbError> {
     let now = aionui_common::now_ms();
+    // Explicitly set role='admin' so fresh databases get the correct role
+    // without depending on the migration-013 UPDATE (which only fires when
+    // the row already exists at migration time, i.e. on upgrade paths).
     sqlx::query(
-        "INSERT OR IGNORE INTO users (id, username, password_hash, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT OR IGNORE INTO users \
+         (id, username, password_hash, role, is_active, created_at, updated_at) \
+         VALUES ('system_default_user', 'admin', '', 'admin', 1, ?, ?)",
     )
-    .bind("system_default_user")
-    .bind("admin")
-    .bind("")
     .bind(now)
     .bind(now)
     .execute(pool)
