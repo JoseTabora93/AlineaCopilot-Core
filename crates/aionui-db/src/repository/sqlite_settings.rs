@@ -58,15 +58,13 @@ impl ISettingsRepository for SqliteSettingsRepository {
         .execute(&self.pool)
         .await?;
 
-        Ok(SystemSettings {
-            id: 1,
-            language: language.to_string(),
-            notification_enabled,
-            cron_notification_enabled,
-            command_queue_enabled,
-            save_upload_to_workspace,
-            updated_at: now,
-        })
+        // Re-fetch to include registration_mode/registration_domain that may
+        // have been set independently (we don't want to overwrite them here).
+        let row = sqlx::query_as::<_, SystemSettings>("SELECT * FROM system_settings WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?;
+
+        Ok(row)
     }
 }
 
@@ -99,6 +97,9 @@ mod tests {
         assert!(s.command_queue_enabled);
         assert!(!s.save_upload_to_workspace);
         assert!(s.updated_at > 0);
+        // Default registration mode
+        assert_eq!(s.effective_registration_mode(), "invite_only");
+        assert!(s.registration_domain.is_none());
     }
 
     #[tokio::test]

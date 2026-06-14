@@ -8,22 +8,23 @@ use axum::extract::{Json, Path, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::from_fn_with_state;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Extension, Router};
 use serde::Deserialize;
 
 use aionui_api_types::{
-    ApiResponse, AuthStatusResponse, ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest,
-    RefreshResponse, RefreshTokenRequest, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
+    AdminCreateUserRequest, AdminResetPasswordRequest, AdminUpdateUserRequest, ApiResponse, AuthStatusResponse,
+    ChangePasswordRequest, LoginRequest, LoginResponse, PublicUser, QrLoginRequest, RefreshResponse,
+    RefreshTokenRequest, RegisterRequest, UserInfoResponse, WebuiChangePasswordRequest, WebuiChangeUsernameRequest,
     WebuiChangeUsernameResponse, WebuiGenerateQrTokenResponse, WebuiResetPasswordResponse, WsTokenResponse,
 };
 use aionui_common::ApiError;
 use aionui_common::constants::COOKIE_MAX_AGE_DAYS;
-use aionui_db::{DbError, IUserRepository, models::User};
+use aionui_db::{DbError, ISettingsRepository, IUserRepository, models::User};
 
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
-use crate::middleware::{AuthState, CurrentUser, auth_middleware};
+use crate::middleware::{AuthState, CurrentUser, auth_middleware, require_admin_middleware};
 use crate::password::{dummy_password_hash, generate_password, hash_password, verify_password_timed};
 use crate::qr_token::QrTokenStore;
 use crate::rate_limit::{
@@ -62,6 +63,7 @@ fn db_error_to_api_error(err: DbError) -> ApiError {
 pub struct AuthRouterState {
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
+    pub settings_repo: Arc<dyn ISettingsRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub local: bool,
@@ -146,6 +148,7 @@ pub fn auth_routes(state: AuthRouterState) -> Router {
     // API rate limited public routes (no auth required)
     let api_public = Router::new()
         .route("/api/auth/status", get(status_handler))
+        .route("/api/auth/register", post(register_handler))
         .route(
             "/api/auth/internal/users",
             get(list_internal_users_handler).post(create_internal_user_handler),
@@ -270,6 +273,11 @@ async fn login_handler(
 
     let user = found_user.ok_or_else(|| ApiError::Unauthorized("Invalid username or password".into()))?;
 
+    // Reject deactivated accounts at login time
+    if !user.is_active {
+        return Err(ApiError::Forbidden("Account is deactivated".into()));
+    }
+
     let token = state
         .jwt_service
         .sign(&user.id, &user.username)
@@ -285,6 +293,9 @@ async fn login_handler(
         PublicUser {
             id: user.id,
             username: user.username,
+            role: user.role,
+            is_active: user.is_active,
+            display_name: user.display_name,
         },
         token,
     );
@@ -472,14 +483,27 @@ async fn update_user_last_login_handler(
 // GET /api/auth/user
 // ---------------------------------------------------------------------------
 
-async fn user_handler(Extension(user): Extension<CurrentUser>) -> Json<UserInfoResponse> {
-    Json(UserInfoResponse {
+async fn user_handler(
+    State(state): State<AuthRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+) -> Result<Json<UserInfoResponse>, ApiError> {
+    let user = state
+        .user_repo
+        .find_by_id(&current_user.id)
+        .await
+        .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
+        .ok_or_else(|| ApiError::NotFound("User not found".into()))?;
+
+    Ok(Json(UserInfoResponse {
         success: true,
         user: PublicUser {
             id: user.id,
             username: user.username,
+            role: user.role,
+            is_active: user.is_active,
+            display_name: user.display_name,
         },
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +655,9 @@ async fn qr_login_handler(
         PublicUser {
             id: user.id,
             username: user.username,
+            role: user.role,
+            is_active: user.is_active,
+            display_name: user.display_name,
         },
         token,
     );
@@ -814,6 +841,274 @@ async fn webui_generate_qr_token_handler(
     Ok(Json(ApiResponse::ok(WebuiGenerateQrTokenResponse {
         token,
         expires_at_ms,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Admin user management routes
+// ---------------------------------------------------------------------------
+
+/// Build the admin user management router.
+///
+/// All routes require authentication AND the `"admin"` role.
+/// Mount this router alongside `auth_routes` in the top-level router.
+///
+/// Endpoints:
+/// - `GET    /api/admin/users`                    — list all users
+/// - `POST   /api/admin/users`                    — create user (invite-only path)
+/// - `PATCH  /api/admin/users/{id}`                — update role / is_active / display_name
+/// - `POST   /api/admin/users/{id}/reset-password` — admin force-resets a password
+pub fn admin_routes(state: AuthRouterState) -> Router {
+    let api_limiter = Arc::new(RateLimiter::api());
+    let action_limiter = Arc::new(RateLimiter::authenticated_action());
+
+    let cleanup_interval = Duration::from_secs(60);
+    api_limiter.start_cleanup_task(cleanup_interval);
+    action_limiter.start_cleanup_task(cleanup_interval);
+
+    let auth_state = AuthState {
+        jwt_service: state.jwt_service.clone(),
+        user_repo: state.user_repo.clone(),
+        local: state.local,
+    };
+
+    Router::new()
+        .route(
+            "/api/admin/users",
+            get(admin_list_users_handler).post(admin_create_user_handler),
+        )
+        .route("/api/admin/users/{id}", patch(admin_update_user_handler))
+        .route(
+            "/api/admin/users/{id}/reset-password",
+            post(admin_reset_password_handler),
+        )
+        // require_admin runs inside auth — layers apply outermost-last
+        .route_layer(axum::middleware::from_fn(require_admin_middleware))
+        .route_layer(from_fn_with_state(auth_state, auth_middleware))
+        .route_layer(from_fn_with_state(
+            action_limiter,
+            authenticated_action_rate_limit_middleware,
+        ))
+        .route_layer(from_fn_with_state(api_limiter, api_rate_limit_middleware))
+        .with_state(state)
+}
+
+async fn admin_list_users_handler(
+    State(state): State<AuthRouterState>,
+) -> Result<Json<ApiResponse<Vec<PublicUser>>>, ApiError> {
+    let users = state.user_repo.list_users().await.map_err(db_error_to_api_error)?;
+
+    let public: Vec<PublicUser> = users
+        .into_iter()
+        .map(|u| PublicUser {
+            id: u.id,
+            username: u.username,
+            role: u.role,
+            is_active: u.is_active,
+            display_name: u.display_name,
+        })
+        .collect();
+
+    Ok(Json(ApiResponse::ok(public)))
+}
+
+async fn admin_create_user_handler(
+    State(state): State<AuthRouterState>,
+    body: Result<Json<AdminCreateUserRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<PublicUser>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    let trimmed = req.username.trim().to_owned();
+    validate_username(&trimmed)?;
+    validate_password(&req.password)?;
+
+    let role = req.role.as_deref().unwrap_or("member");
+    if role != "admin" && role != "member" {
+        return Err(ApiError::BadRequest(format!(
+            "Invalid role '{role}': must be 'admin' or 'member'"
+        )));
+    }
+
+    let password = req.password.clone();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Task join error: {e}")))??;
+
+    let user = state
+        .user_repo
+        .create_user_full(&trimmed, &hash, req.email.as_deref(), req.display_name.as_deref(), role)
+        .await
+        .map_err(db_error_to_api_error)?;
+
+    Ok(Json(ApiResponse::ok(PublicUser {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        is_active: user.is_active,
+        display_name: user.display_name,
+    })))
+}
+
+async fn admin_update_user_handler(
+    State(state): State<AuthRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<AdminUpdateUserRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    // Prevent self-demotion / self-deactivation
+    if id == current_user.id {
+        if req.is_active == Some(false) {
+            return Err(ApiError::BadRequest("Cannot deactivate your own account".into()));
+        }
+        if req.role.as_deref() == Some("member") {
+            return Err(ApiError::BadRequest("Cannot demote your own admin role".into()));
+        }
+    }
+
+    if let Some(role) = &req.role {
+        if role != "admin" && role != "member" {
+            return Err(ApiError::BadRequest(format!(
+                "Invalid role '{role}': must be 'admin' or 'member'"
+            )));
+        }
+        state
+            .user_repo
+            .set_role(&id, role)
+            .await
+            .map_err(db_error_to_api_error)?;
+    }
+
+    if let Some(is_active) = req.is_active {
+        state
+            .user_repo
+            .set_active(&id, is_active)
+            .await
+            .map_err(db_error_to_api_error)?;
+    }
+
+    if let Some(ref name) = req.display_name {
+        state
+            .user_repo
+            .set_display_name(&id, Some(name.as_str()))
+            .await
+            .map_err(db_error_to_api_error)?;
+    }
+
+    Ok(Json(ApiResponse::message("User updated successfully")))
+}
+
+async fn admin_reset_password_handler(
+    State(state): State<AuthRouterState>,
+    Path(id): Path<String>,
+    body: Result<Json<AdminResetPasswordRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    validate_password(&req.new_password)?;
+
+    let password = req.new_password.clone();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Task join error: {e}")))??;
+
+    state
+        .user_repo
+        .update_password(&id, &hash)
+        .await
+        .map_err(db_error_to_api_error)?;
+
+    Ok(Json(ApiResponse::message("Password reset successfully")))
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/auth/register — policy-governed self-registration
+// ---------------------------------------------------------------------------
+
+/// Public self-registration endpoint governed by `system_settings.registration_mode`.
+///
+/// - `invite_only` (default): always returns 403 — admin must create accounts.
+/// - `domain_allowlist`: registration allowed only when email ends with `registration_domain`.
+/// - `open`: anyone may register without restriction.
+///
+/// This endpoint intentionally remains in the codebase even when mode is `invite_only`
+/// so that changing the setting is sufficient to open registration — no code change needed.
+pub async fn register_handler(
+    State(state): State<AuthRouterState>,
+    body: Result<Json<RegisterRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<PublicUser>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    // Read the registration policy; default to 'invite_only' when no settings row exists.
+    let mode = state
+        .settings_repo
+        .get_settings()
+        .await
+        .map_err(|e| ApiError::Internal(format!("Settings lookup failed: {e}")))?
+        .map(|s| s.effective_registration_mode().to_owned())
+        .unwrap_or_else(|| "invite_only".to_owned());
+
+    match mode.as_str() {
+        "invite_only" => {
+            return Err(ApiError::Forbidden("Registration by invitation only".into()));
+        }
+        "domain_allowlist" => {
+            let domain = state
+                .settings_repo
+                .get_settings()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Settings lookup failed: {e}")))?
+                .and_then(|s| s.registration_domain.clone())
+                .unwrap_or_default();
+
+            if domain.is_empty() {
+                return Err(ApiError::Internal(
+                    "Domain allowlist mode requires registration_domain to be set".into(),
+                ));
+            }
+
+            let email = req.email.as_deref().unwrap_or("");
+            if !email.ends_with(&format!("@{domain}")) {
+                return Err(ApiError::Forbidden(format!(
+                    "Registration requires an email from @{domain}"
+                )));
+            }
+        }
+        "open" => {}
+        other => {
+            tracing::warn!(mode = other, "Unknown registration_mode, defaulting to invite_only");
+            return Err(ApiError::Forbidden("Registration by invitation only".into()));
+        }
+    }
+
+    let trimmed = req.username.trim().to_owned();
+    validate_username(&trimmed)?;
+    validate_password(&req.password)?;
+
+    let password = req.password.clone();
+    let hash = tokio::task::spawn_blocking(move || hash_password(&password))
+        .await
+        .map_err(|e| ApiError::Internal(format!("Task join error: {e}")))??;
+
+    let user = state
+        .user_repo
+        .create_user_full(
+            &trimmed,
+            &hash,
+            req.email.as_deref(),
+            req.display_name.as_deref(),
+            "member",
+        )
+        .await
+        .map_err(db_error_to_api_error)?;
+
+    Ok(Json(ApiResponse::ok(PublicUser {
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        is_active: user.is_active,
+        display_name: user.display_name,
     })))
 }
 

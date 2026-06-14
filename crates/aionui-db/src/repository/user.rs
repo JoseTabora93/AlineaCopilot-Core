@@ -27,10 +27,23 @@ pub trait IUserRepository: Send + Sync {
     /// Used during the initial bootstrap flow.
     async fn set_system_user_credentials(&self, username: &str, password_hash: &str) -> Result<(), DbError>;
 
-    /// Creates a new user and returns the inserted row.
+    /// Creates a new user with role `"member"` and returns the inserted row.
     ///
     /// Returns `DbError::Conflict` if the username already exists.
     async fn create_user(&self, username: &str, password_hash: &str) -> Result<User, DbError>;
+
+    /// Creates a new user with full control over all optional fields.
+    ///
+    /// `role` should be `"admin"` or `"member"`.
+    /// Returns `DbError::Conflict` if the username already exists.
+    async fn create_user_full(
+        &self,
+        username: &str,
+        password_hash: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+        role: &str,
+    ) -> Result<User, DbError>;
 
     /// Finds a user by username.
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, DbError>;
@@ -57,4 +70,16 @@ pub trait IUserRepository: Send + Sync {
 
     /// Updates a user's JWT secret.
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError>;
+
+    /// Sets the `is_active` flag.
+    ///
+    /// Setting `false` causes the auth middleware to reject subsequent login
+    /// attempts for this account (soft offboarding).
+    async fn set_active(&self, user_id: &str, is_active: bool) -> Result<(), DbError>;
+
+    /// Updates the RBAC role. Known values: `"admin"`, `"member"`.
+    async fn set_role(&self, user_id: &str, role: &str) -> Result<(), DbError>;
+
+    /// Updates the display name. Pass `None` to clear it.
+    async fn set_display_name(&self, user_id: &str, display_name: Option<&str>) -> Result<(), DbError>;
 }
