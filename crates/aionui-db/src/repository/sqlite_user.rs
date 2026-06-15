@@ -278,6 +278,20 @@ impl IUserRepository for SqliteUserRepository {
 
         Ok(())
     }
+
+    async fn delete_user(&self, user_id: &str) -> Result<(), DbError> {
+        // Conversations + messages cascade-delete via ON DELETE CASCADE.
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
 }
 
 /// Checks if a SQLite database error is a UNIQUE constraint violation.
@@ -635,5 +649,20 @@ mod tests {
         let user = repo.get_system_user().await.unwrap().unwrap();
         assert_eq!(user.role, "admin");
         assert!(user.is_active);
+    }
+
+    #[tokio::test]
+    async fn delete_user_removes_row() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("todelete", "h").await.unwrap();
+        repo.delete_user(&user.id).await.unwrap();
+        assert!(repo.find_by_id(&user.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_user_nonexistent_returns_notfound() {
+        let (repo, _db) = setup().await;
+        let err = repo.delete_user("no_such_id").await.unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
     }
 }
