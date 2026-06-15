@@ -877,7 +877,10 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
             "/api/admin/users",
             get(admin_list_users_handler).post(admin_create_user_handler),
         )
-        .route("/api/admin/users/{id}", patch(admin_update_user_handler))
+        .route(
+            "/api/admin/users/{id}",
+            patch(admin_update_user_handler).delete(admin_delete_user_handler),
+        )
         .route(
             "/api/admin/users/{id}/reset-password",
             post(admin_reset_password_handler),
@@ -997,6 +1000,31 @@ async fn admin_update_user_handler(
     }
 
     Ok(Json(ApiResponse::message("User updated successfully")))
+}
+
+/// DELETE /api/admin/users/{id} — permanently deletes a user (admin only).
+///
+/// Conversations and messages cascade-delete. Refuses to delete the calling
+/// admin's own account or the `system_default_user`.
+async fn admin_delete_user_handler(
+    State(state): State<AuthRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    if id == current_user.id {
+        return Err(ApiError::BadRequest("Cannot delete your own account".into()));
+    }
+    if id == "system_default_user" {
+        return Err(ApiError::BadRequest("Cannot delete the system admin user".into()));
+    }
+
+    state
+        .user_repo
+        .delete_user(&id)
+        .await
+        .map_err(db_error_to_api_error)?;
+
+    Ok(Json(ApiResponse::message("User deleted successfully")))
 }
 
 async fn admin_reset_password_handler(
