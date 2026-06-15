@@ -278,6 +278,25 @@ impl IUserRepository for SqliteUserRepository {
 
         Ok(())
     }
+
+    async fn delete_user(&self, user_id: &str) -> Result<(), DbError> {
+        // Dependent rows are removed by `ON DELETE CASCADE`:
+        //   conversations.user_id -> users.id            (cascade)
+        //   messages.conversation_id -> conversations.id (cascade)
+        //   conversation_artifacts.conversation_id       (cascade)
+        // The runtime pool enables `PRAGMA foreign_keys = ON`, so a single
+        // DELETE on `users` is sufficient — no manual transaction required.
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
 }
 
 /// Checks if a SQLite database error is a UNIQUE constraint violation.
@@ -635,5 +654,22 @@ mod tests {
         let user = repo.get_system_user().await.unwrap().unwrap();
         assert_eq!(user.role, "admin");
         assert!(user.is_active);
+    }
+
+    #[tokio::test]
+    async fn delete_user_removes_row() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("quincy", "h").await.unwrap();
+
+        repo.delete_user(&user.id).await.unwrap();
+
+        assert!(repo.find_by_id(&user.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_user_nonexistent_returns_not_found() {
+        let (repo, _db) = setup().await;
+        let err = repo.delete_user("no_such_id").await.unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
     }
 }

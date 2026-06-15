@@ -857,6 +857,7 @@ async fn webui_generate_qr_token_handler(
 /// - `GET    /api/admin/users`                    — list all users
 /// - `POST   /api/admin/users`                    — create user (invite-only path)
 /// - `PATCH  /api/admin/users/{id}`                — update role / is_active / display_name
+/// - `DELETE /api/admin/users/{id}`                — permanently delete a user
 /// - `POST   /api/admin/users/{id}/reset-password` — admin force-resets a password
 pub fn admin_routes(state: AuthRouterState) -> Router {
     let api_limiter = Arc::new(RateLimiter::api());
@@ -877,7 +878,10 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
             "/api/admin/users",
             get(admin_list_users_handler).post(admin_create_user_handler),
         )
-        .route("/api/admin/users/{id}", patch(admin_update_user_handler))
+        .route(
+            "/api/admin/users/{id}",
+            patch(admin_update_user_handler).delete(admin_delete_user_handler),
+        )
         .route(
             "/api/admin/users/{id}/reset-password",
             post(admin_reset_password_handler),
@@ -997,6 +1001,41 @@ async fn admin_update_user_handler(
     }
 
     Ok(Json(ApiResponse::message("User updated successfully")))
+}
+
+/// `DELETE /api/admin/users/{id}` — permanently delete a user.
+///
+/// Guards (both return `400 Bad Request`, mirroring the self-protection style
+/// of `admin_update_user_handler`):
+/// 1. An admin cannot delete their own account.
+/// 2. The bootstrap `system_default_user` can never be deleted — it is the
+///    primary WebUI account the platform falls back to.
+///
+/// Deletion cascades to the user's conversations (and transitively their
+/// messages / artifacts) via the schema's `ON DELETE CASCADE` foreign keys.
+/// Returns `404 Not Found` when no user with the given ID exists.
+async fn admin_delete_user_handler(
+    State(state): State<AuthRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    // Prevent self-deletion.
+    if id == current_user.id {
+        return Err(ApiError::BadRequest("Cannot delete your own account".into()));
+    }
+
+    // Never allow deleting the bootstrap/system default account.
+    if id == "system_default_user" {
+        return Err(ApiError::BadRequest("Cannot delete the system default user".into()));
+    }
+
+    state
+        .user_repo
+        .delete_user(&id)
+        .await
+        .map_err(db_error_to_api_error)?;
+
+    Ok(Json(ApiResponse::message("User deleted successfully")))
 }
 
 async fn admin_reset_password_handler(

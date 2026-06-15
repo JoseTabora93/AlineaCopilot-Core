@@ -82,4 +82,15 @@ pub trait IUserRepository: Send + Sync {
 
     /// Updates the display name. Pass `None` to clear it.
     async fn set_display_name(&self, user_id: &str, display_name: Option<&str>) -> Result<(), DbError>;
+
+    /// Permanently deletes a user by ID.
+    ///
+    /// Dependent rows owned by the user are removed by the schema's
+    /// `ON DELETE CASCADE` foreign keys (e.g. `conversations`, and transitively
+    /// `messages` / `conversation_artifacts`). Foreign-key enforcement must be
+    /// enabled on the connection (`PRAGMA foreign_keys = ON`) for the cascade to
+    /// take effect.
+    ///
+    /// Returns `DbError::NotFound` if no user with the given ID exists.
+    async fn delete_user(&self, user_id: &str) -> Result<(), DbError>;
 }
