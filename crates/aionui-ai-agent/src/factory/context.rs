@@ -7,6 +7,11 @@ use crate::session_context::AgentSessionContext;
 
 pub(super) struct FactoryContext {
     pub conversation_id: String,
+    /// Dueño de la conversación. Usado para emitir el token de identidad
+    /// firmado que viaja al agente (Fase 2 #5).
+    pub user_id: String,
+    /// Roles RBAC del usuario (eje 1), propagados al token de identidad.
+    pub roles: Vec<String>,
     pub workspace: String,
     pub is_custom_workspace: bool,
 }
@@ -15,6 +20,8 @@ impl FactoryContext {
     pub async fn resolve(context: &AgentSessionContext) -> Result<Self, AgentError> {
         Ok(Self {
             conversation_id: context.conversation.conversation_id.clone(),
+            user_id: context.conversation.user_id.clone(),
+            roles: context.conversation.roles.clone(),
             workspace: context.workspace.path.clone(),
             is_custom_workspace: context.workspace.is_custom,
         })

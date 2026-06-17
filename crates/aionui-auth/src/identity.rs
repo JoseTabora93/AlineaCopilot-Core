@@ -3,7 +3,11 @@
 //! El Core emite, por **cada** request a un agente, un token Ed25519 con
 //! `{user_id, roles, project_id?, scopes, exp, jti}`. El agente (OpenClaw/Hermes)
 //! valida la firma con la clave pública del Core y opera **solo dentro del scope**.
-//! `exp` corto + `jti` único permiten revocación por denylist.
+//!
+//! Revocación: cada token lleva `jti` único y `exp`, pensados para una denylist
+//! de `jti`, pero esa denylist **aún no está implementada** (no hay consumidor en
+//! el Core). Hoy la única defensa real es `exp`; trátese como pendiente, no como
+//! una propiedad vigente.
 
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
@@ -25,7 +29,8 @@ pub struct IdentityClaims {
     pub scopes: Vec<String>,
     /// Expiración en unix-ms.
     pub exp: i64,
-    /// Identificador único del token (revocación por denylist).
+    /// Identificador único del token (para una futura denylist de revocación,
+    /// aún no implementada).
     pub jti: String,
 }
 

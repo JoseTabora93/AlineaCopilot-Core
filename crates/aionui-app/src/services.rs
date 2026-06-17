@@ -210,6 +210,7 @@ impl AppServices {
             backend_binary_path: backend_binary_path.clone(),
             guide_mcp_config: guide_mcp_config.clone(),
             mcp_server_repo: Some(mcp_server_repo),
+            request_identity: Some(request_identity.clone()),
         });
 
         // Agent factory is now wired. Future extension/custom agents

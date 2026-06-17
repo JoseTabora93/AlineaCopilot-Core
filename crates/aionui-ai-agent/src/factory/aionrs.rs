@@ -31,6 +31,9 @@ pub(super) async fn build(
     model: ProviderWithModel,
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
+    // Nota: aionrs corre in-process (AgentEngine), no spawnea un subproceso con
+    // `command_spec.env`, así que NO inyecta el token de identidad firmado (Fase
+    // 2 #5): esa credencial existe para autenticar agentes externos (ACP/OpenClaw).
     let belongs_to_team = build_context.team.is_some();
     let mut overrides = build_context.config;
 

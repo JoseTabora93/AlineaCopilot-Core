@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aionui_api_types::GuideMcpConfig;
+use aionui_auth::RequestIdentityService;
 use aionui_db::{IMcpServerRepository, IProviderRepository};
 use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
@@ -43,6 +44,10 @@ pub struct AgentFactoryDeps {
     /// inject enabled servers into `session/new` (ELECTRON-1JG fix).
     /// `None` for tests/composition paths that do not need MCP injection.
     pub mcp_server_repo: Option<Arc<dyn IMcpServerRepository>>,
+    /// Emisor de tokens de identidad firmados (Fase 2 #5). Cuando `Some`, la
+    /// factory ACP inyecta `AION_IDENTITY_TOKEN`/`AION_IDENTITY_PUBKEY` en el
+    /// env del proceso del agente. `None` en tests/paths sin identidad.
+    pub request_identity: Option<Arc<RequestIdentityService>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.
