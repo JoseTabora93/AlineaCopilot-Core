@@ -57,4 +57,9 @@ pub trait IUserRepository: Send + Sync {
 
     /// Updates a user's JWT secret.
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError>;
+
+    /// Returns the role ids assigned to a user (from `user_roles`). Empty if none.
+    ///
+    /// RBAC eje 1 (rol). Usado por el auth middleware para poblar `CurrentUser.roles`.
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError>;
 }

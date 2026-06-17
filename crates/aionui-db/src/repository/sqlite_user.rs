@@ -211,6 +211,15 @@ impl IUserRepository for SqliteUserRepository {
 
         Ok(())
     }
+
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT role_id FROM user_roles WHERE user_id = ?")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(role_id,)| role_id).collect())
+    }
 }
 
 /// Checks if a SQLite database error is a UNIQUE constraint violation.

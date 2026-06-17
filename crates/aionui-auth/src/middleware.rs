@@ -22,6 +22,8 @@ pub struct CurrentUser {
     pub id: String,
     /// Username.
     pub username: String,
+    /// Role ids del usuario (RBAC eje 1). Vacío si no tiene roles asignados.
+    pub roles: Vec<String>,
 }
 
 /// Shared state for the authentication middleware.
@@ -54,6 +56,7 @@ pub async fn auth_middleware(
         request.extensions_mut().insert(CurrentUser {
             id: "system_default_user".to_string(),
             username: "system_default_user".to_string(),
+            roles: vec!["admin".to_string()],
         });
         return Ok(next.run(request).await);
     }
@@ -76,9 +79,17 @@ pub async fn auth_middleware(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
+    // RBAC eje 1: cargar los roles del usuario (no fatal si falla -> sin roles).
+    let roles = state
+        .user_repo
+        .get_user_roles(&user.id)
+        .await
+        .unwrap_or_default();
+
     request.extensions_mut().insert(CurrentUser {
         id: user.id,
         username: user.username,
+        roles,
     });
 
     Ok(next.run(request).await)
@@ -92,6 +103,7 @@ pub async fn local_auth_middleware(mut request: Request, next: Next) -> Response
     request.extensions_mut().insert(CurrentUser {
         id: "system_default_user".to_string(),
         username: "system_default_user".to_string(),
+        roles: vec!["admin".to_string()],
     });
     next.run(request).await
 }
