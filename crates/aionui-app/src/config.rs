@@ -49,6 +49,19 @@ pub fn derive_encryption_key(jwt_secret: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+/// Deriva el KEK de 32 bytes que cifra la semilla de identidad Ed25519 (Fase 2 #5).
+///
+/// Usa **separación de dominio** respecto a [`derive_encryption_key`]: el prefijo
+/// distinto garantiza que ambos KEK sean criptográficamente independientes aunque
+/// compartan secreto raíz, de modo que comprometer el cifrado de un dominio (p. ej.
+/// las api-keys de providers) no ayuda a atacar el otro (la raíz de identidad).
+pub fn derive_identity_kek(root_secret: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"alinea-identity-kek:");
+    hasher.update(root_secret.as_bytes());
+    hasher.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

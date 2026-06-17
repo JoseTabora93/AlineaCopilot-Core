@@ -12,7 +12,7 @@ mod common;
 
 use std::sync::Arc;
 
-use aionui_app::{AppConfig, AppServices, ModuleStates, build_module_states, create_router_with_states};
+use aionui_app::{AppServices, ModuleStates, build_module_states, create_router_with_states};
 use aionui_assistant::{AssistantRouterState, AssistantService, BuiltinAssistantRegistry};
 use aionui_db::{
     IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantOverrideRepository,
@@ -126,7 +126,7 @@ async fn fixture() -> Fixture {
 
     // Bring up in-memory DB + services + default module states.
     let db = init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &common::isolated_config()).await.unwrap();
     let (mut states, _): (ModuleStates, _) = build_module_states(&services).await.expect("build module states");
     for table in [
         "assistant_preferences",

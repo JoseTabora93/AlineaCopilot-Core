@@ -12,7 +12,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aionui_app::{AppConfig, AppServices, create_router};
+use aionui_app::{AppServices, create_router};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
@@ -39,7 +39,7 @@ struct TestApp {
 
 async fn start_app() -> TestApp {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &common::isolated_config()).await.unwrap();
     let router = create_router(&services).await.expect("build router");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -274,3 +274,5 @@ async fn binary_first_frame_is_protocol_error() {
 
     read_until_close(&mut ws).await;
 }
+
+mod common;

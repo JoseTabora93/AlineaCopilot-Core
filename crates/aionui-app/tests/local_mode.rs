@@ -8,7 +8,7 @@ async fn test_local_mode_skips_auth() {
     let db = aionui_db::init_database_memory().await.unwrap();
     let config = aionui_app::AppConfig {
         local: true,
-        ..Default::default()
+        ..common::isolated_config()
     };
     let services = aionui_app::AppServices::from_config(db, &config).await.unwrap();
 
@@ -35,7 +35,7 @@ async fn test_local_mode_skips_auth() {
 #[tokio::test]
 async fn test_non_local_mode_requires_auth() {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = aionui_app::AppServices::from_config(db, &aionui_app::AppConfig::default())
+    let services = aionui_app::AppServices::from_config(db, &common::isolated_config())
         .await
         .unwrap();
 
@@ -52,3 +52,5 @@ async fn test_non_local_mode_requires_auth() {
 
     services.database.close().await;
 }
+
+mod common;

@@ -13,9 +13,24 @@ use aionui_extension::{ExternalPathsManager, SkillPaths, SkillRouterState};
 use aionui_file::FileService;
 use aionui_system::VersionCheckService;
 
+/// `AppConfig` con `data_dir` temporal único por invocación. Cada `from_config`
+/// arranca el keystore de identidad (Fase 2 #5), que cifra su semilla con un KEK
+/// derivado del secreto JWT; como la DB en memoria regenera ese secreto en cada
+/// build, un `data_dir` compartido haría que un `identity.enc` de otro test/corrida
+/// no descifrara y el boot fallara. El contador atómico evita colisiones aun con
+/// tests concurrentes que llamen al mismo helper.
+pub fn isolated_config() -> AppConfig {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("alinea-app-it-{}-{}", std::process::id(), n));
+    let _ = std::fs::remove_dir_all(&dir);
+    AppConfig { data_dir: dir, ..Default::default() }
+}
+
 pub async fn build_app() -> (axum::Router, AppServices) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &isolated_config()).await.unwrap();
     let router = create_router(&services).await.expect("build router");
     (router, services)
 }
@@ -29,7 +44,7 @@ pub async fn build_app() -> (axum::Router, AppServices) {
 #[allow(dead_code)]
 pub async fn build_app_with_skill_paths(root: &std::path::Path) -> (axum::Router, AppServices, SkillPaths) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &isolated_config()).await.unwrap();
     let (mut states, _) = build_module_states(&services).await.expect("build module states");
 
     let builtin_dir = root.join("builtin-skills");
@@ -65,7 +80,7 @@ pub async fn build_app_with_skill_paths(root: &std::path::Path) -> (axum::Router
 
 pub async fn build_app_with_noop_opener() -> (axum::Router, AppServices) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &isolated_config()).await.unwrap();
     let (mut states, _) = build_module_states(&services).await.expect("build module states");
     states.shell.shell_service = std::sync::Arc::new(aionui_shell::ShellService::new(std::sync::Arc::new(
         aionui_shell::NoopSystemOpener,
@@ -76,7 +91,7 @@ pub async fn build_app_with_noop_opener() -> (axum::Router, AppServices) {
 
 pub async fn build_app_with_file_roots(allowed_roots: Vec<std::path::PathBuf>) -> (axum::Router, AppServices) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &isolated_config()).await.unwrap();
     let (mut states, _) = build_module_states(&services).await.expect("build module states");
     states.file.file_service = std::sync::Arc::new(FileService::new(services.event_bus.clone(), allowed_roots));
     let router = create_router_with_states(&services, states);
@@ -88,7 +103,7 @@ pub async fn build_app_with_mock_version(
     mock_server: &MockServer,
 ) -> (axum::Router, AppServices) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &isolated_config()).await.unwrap();
     let (mut states, _) = build_module_states(&services).await.expect("build module states");
     states.system.version_check_service =
         VersionCheckService::with_api_base(reqwest::Client::new(), current_version.to_owned(), mock_server.uri());
@@ -118,7 +133,7 @@ pub async fn build_app_with_mock_agents() -> (axum::Router, AppServices) {
     });
     let wtm: std::sync::Arc<dyn aionui_ai_agent::IWorkerTaskManager> =
         std::sync::Arc::new(WorkerTaskManagerImpl::new(factory));
-    let services = AppServices::from_config(db, &AppConfig::default())
+    let services = AppServices::from_config(db, &isolated_config())
         .await
         .unwrap()
         .with_worker_task_manager(wtm);

@@ -410,6 +410,7 @@ async fn authenticated_action_limit_uses_user_id_key() {
                 request.extensions_mut().insert(CurrentUser {
                     id: "user_42".into(),
                     username: "admin".into(),
+                    roles: vec!["admin".into()],
                 });
                 Ok::<_, std::convert::Infallible>(next.run(request).await)
             },
