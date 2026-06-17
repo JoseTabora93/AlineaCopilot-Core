@@ -1683,3 +1683,35 @@ async fn cd3_on_conversation_delete_trait() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].name, "cron.job-removed");
 }
+
+#[tokio::test]
+async fn ownership_guard_blocks_cross_user_access() {
+    // El stub de conversaciones resuelve cualquier conversation_id a user_id "u1".
+    let (svc, _, _) = setup().await;
+    let job = svc.add_job(make_create_req("Owned by u1", every_60s())).await.unwrap();
+
+    // Dueño (u1) pasa; otro usuario (u2) recibe JobNotFound (no se revela existencia).
+    assert!(svc.ensure_owner("u1", &job.id).await.is_ok());
+    assert!(matches!(
+        svc.ensure_owner("u2", &job.id).await,
+        Err(aionui_cron::error::CronError::JobNotFound(_))
+    ));
+
+    // Job inexistente -> JobNotFound para cualquiera.
+    assert!(svc.ensure_owner("u1", "cron_missing").await.is_err());
+
+    // list_jobs_for_user filtra por dueño.
+    let q = ListCronJobsQuery::default();
+    assert_eq!(svc.list_jobs_for_user("u1", &q).await.unwrap().len(), 1);
+    assert!(svc.list_jobs_for_user("u2", &q).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn create_rejects_foreign_conversation() {
+    // El stub resuelve cualquier conversation_id a user_id "u1".
+    let (svc, _, _) = setup().await;
+    // Dueño puede ligar; otro usuario no; vacío (auto-provisión) siempre permitido.
+    assert!(svc.user_owns_conversation("u1", "conv_x").await.unwrap());
+    assert!(!svc.user_owns_conversation("u2", "conv_x").await.unwrap());
+    assert!(svc.user_owns_conversation("u2", "").await.unwrap());
+}
