@@ -91,6 +91,7 @@ fn make_aionrs_options(
         conversation: ConversationContext {
             conversation_id: conversation_id.to_owned(),
             user_id: "user-1".to_owned(),
+            roles: vec![],
             agent_type: AgentType::Aionrs,
             source: None,
         },

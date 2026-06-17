@@ -25,7 +25,10 @@ pub fn isolated_config() -> AppConfig {
     let n = SEQ.fetch_add(1, Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("alinea-app-it-{}-{}", std::process::id(), n));
     let _ = std::fs::remove_dir_all(&dir);
-    AppConfig { data_dir: dir, ..Default::default() }
+    AppConfig {
+        data_dir: dir,
+        ..Default::default()
+    }
 }
 
 pub async fn build_app() -> (axum::Router, AppServices) {

@@ -80,11 +80,7 @@ pub async fn auth_middleware(
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
     // RBAC eje 1: cargar los roles del usuario (no fatal si falla -> sin roles).
-    let roles = state
-        .user_repo
-        .get_user_roles(&user.id)
-        .await
-        .unwrap_or_default();
+    let roles = state.user_repo.get_user_roles(&user.id).await.unwrap_or_default();
 
     request.extensions_mut().insert(CurrentUser {
         id: user.id,

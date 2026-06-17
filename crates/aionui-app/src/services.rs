@@ -8,7 +8,9 @@ use aionui_ai_agent::{
     build_agent_factory,
 };
 use aionui_api_types::GuideMcpConfig;
-use aionui_auth::{CookieConfig, JwtService, QrTokenStore, RequestIdentityService, load_or_create_identity, resolve_jwt_secret};
+use aionui_auth::{
+    CookieConfig, JwtService, QrTokenStore, RequestIdentityService, load_or_create_identity, resolve_jwt_secret,
+};
 use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
@@ -75,6 +77,7 @@ impl AppServices {
             worker_task_manager: self.worker_task_manager.clone(),
             conversation_runtime_state: self.conversation_runtime_state.clone(),
             conversation_repo: self.conversation_repo.clone(),
+            user_repo: self.user_repo.clone(),
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
         });
         self
@@ -125,7 +128,9 @@ impl AppServices {
         // del de providers; su raíz es `ALINEA_MASTER_KEY` si está en el entorno
         // (aísla la identidad del JWT), o el mismo secreto raíz del JWT en su
         // defecto. La semilla Ed25519 se carga/genera cifrada en reposo (0600).
-        let identity_root = std::env::var("ALINEA_MASTER_KEY").ok().unwrap_or_else(|| secret.clone());
+        let identity_root = std::env::var("ALINEA_MASTER_KEY")
+            .ok()
+            .unwrap_or_else(|| secret.clone());
         let identity_kek = derive_identity_kek(&identity_root);
         let request_identity = Arc::new(
             load_or_create_identity(&data_dir, &identity_kek)
@@ -222,6 +227,7 @@ impl AppServices {
             worker_task_manager: worker_task_manager.clone(),
             conversation_runtime_state: conversation_runtime_state.clone(),
             conversation_repo: conversation_repo.clone(),
+            user_repo: user_repo.clone(),
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
         });
 
@@ -261,6 +267,7 @@ struct ConversationServiceDeps<'a> {
     worker_task_manager: Arc<dyn IWorkerTaskManager>,
     conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     conversation_repo: Arc<dyn IConversationRepository>,
+    user_repo: Arc<dyn IUserRepository>,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
 }
 
@@ -278,6 +285,7 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
         Arc::new(SqliteAcpSessionRepository::new(deps.database.pool().clone())),
     )
     .with_runtime_state(deps.conversation_runtime_state);
+    service.with_user_repo(deps.user_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),
@@ -305,7 +313,10 @@ mod tests {
     fn isolated_config(label: &str) -> AppConfig {
         let dir = std::env::temp_dir().join(format!("alinea-app-{}-{}", std::process::id(), label));
         let _ = std::fs::remove_dir_all(&dir);
-        AppConfig { data_dir: dir, ..Default::default() }
+        AppConfig {
+            data_dir: dir,
+            ..Default::default()
+        }
     }
 
     #[tokio::test]
@@ -328,7 +339,9 @@ mod tests {
     #[tokio::test]
     async fn test_jwt_secret_persisted_to_db() {
         let db = aionui_db::init_database_memory().await.unwrap();
-        let services = AppServices::from_config(db, &isolated_config("jwtpersist")).await.unwrap();
+        let services = AppServices::from_config(db, &isolated_config("jwtpersist"))
+            .await
+            .unwrap();
 
         // System user should now have a jwt_secret persisted
         let system_user = services.user_repo.get_system_user().await.unwrap();

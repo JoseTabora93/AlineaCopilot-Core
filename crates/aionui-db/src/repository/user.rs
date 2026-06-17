@@ -62,4 +62,8 @@ pub trait IUserRepository: Send + Sync {
     ///
     /// RBAC eje 1 (rol). Usado por el auth middleware para poblar `CurrentUser.roles`.
     async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError>;
+
+    /// Asigna `role_id` a `user_id` (idempotente). Ambos deben existir: hay FK a
+    /// `users(id)` y `roles(id)`. RBAC eje 1 — habilita poblar `user_roles`.
+    async fn assign_role(&self, user_id: &str, role_id: &str) -> Result<(), DbError>;
 }

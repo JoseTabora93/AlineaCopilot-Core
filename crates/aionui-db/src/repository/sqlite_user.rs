@@ -213,12 +213,22 @@ impl IUserRepository for SqliteUserRepository {
     }
 
     async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError> {
-        let rows: Vec<(String,)> =
-            sqlx::query_as("SELECT role_id FROM user_roles WHERE user_id = ?")
-                .bind(user_id)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT role_id FROM user_roles WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
         Ok(rows.into_iter().map(|(role_id,)| role_id).collect())
+    }
+
+    async fn assign_role(&self, user_id: &str, role_id: &str) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        sqlx::query("INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)")
+            .bind(user_id)
+            .bind(role_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 }
 

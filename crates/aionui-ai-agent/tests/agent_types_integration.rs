@@ -198,6 +198,7 @@ async fn collect_idle_ignores_aionrs_agent_type() {
             conversation: ConversationContext {
                 conversation_id: id.into(),
                 user_id: "user-1".into(),
+                roles: vec![],
                 agent_type,
                 source: None,
             },

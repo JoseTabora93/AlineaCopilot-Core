@@ -11,7 +11,7 @@ use aionui_ai_agent::types::BuildTaskOptions;
 use aionui_api_types::{AcpBuildExtra, AionrsBuildExtra, TeamSessionBinding};
 use aionui_common::{AgentType, WorkspacePathValidationError, validate_workspace_path_availability};
 use aionui_db::models::ConversationRow;
-use aionui_db::{IAcpSessionRepository, IAgentMetadataRepository};
+use aionui_db::{IAcpSessionRepository, IAgentMetadataRepository, IUserRepository};
 use tracing::{debug, warn};
 
 use crate::convert::string_to_enum;
@@ -25,6 +25,9 @@ pub(crate) struct SessionContextBuilder<'a> {
     workspace_root: &'a Path,
     agent_metadata_repo: &'a Arc<dyn IAgentMetadataRepository>,
     acp_session_repo: &'a Arc<dyn IAcpSessionRepository>,
+    /// Resuelve los roles RBAC del usuario. `None` en contextos sin repo de
+    /// usuarios (algunos tests): los roles quedan vacíos.
+    user_repo: Option<Arc<dyn IUserRepository>>,
 }
 
 impl<'a> SessionContextBuilder<'a> {
@@ -32,11 +35,13 @@ impl<'a> SessionContextBuilder<'a> {
         workspace_root: &'a Path,
         agent_metadata_repo: &'a Arc<dyn IAgentMetadataRepository>,
         acp_session_repo: &'a Arc<dyn IAcpSessionRepository>,
+        user_repo: Option<Arc<dyn IUserRepository>>,
     ) -> Self {
         Self {
             workspace_root,
             agent_metadata_repo,
             acp_session_repo,
+            user_repo,
         }
     }
 
@@ -73,11 +78,13 @@ impl<'a> SessionContextBuilder<'a> {
             reason: format!("Invalid Team runtime context: {e}"),
         })?;
         let kind = self.build_kind(row, &agent_type, extra, team.clone()).await?;
+        let roles = self.resolve_roles(&row.user_id).await;
 
         Ok(AgentSessionContext {
             conversation: ConversationContext {
                 conversation_id: row.id.clone(),
                 user_id: row.user_id.clone(),
+                roles,
                 agent_type,
                 source: row.source.clone(),
             },
@@ -86,6 +93,18 @@ impl<'a> SessionContextBuilder<'a> {
             skills,
             team,
             kind,
+        })
+    }
+
+    /// Resuelve los roles RBAC del usuario. Si no hay repo, o la consulta falla,
+    /// devuelve vacío (fail-closed: sin roles = sin privilegios) y deja un warn.
+    async fn resolve_roles(&self, user_id: &str) -> Vec<String> {
+        let Some(repo) = &self.user_repo else {
+            return Vec::new();
+        };
+        repo.get_user_roles(user_id).await.unwrap_or_else(|e| {
+            warn!(user_id = %user_id, error = %e, "failed to load user roles; defaulting to none");
+            Vec::new()
         })
     }
 
@@ -461,18 +480,24 @@ mod tests {
     use super::*;
     use aionui_db::{
         CreateAcpSessionParams, SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-        UpsertAgentMetadataParams, init_database_memory,
+        SqliteUserRepository, UpsertAgentMetadataParams, init_database_memory,
     };
 
     struct TestRepos {
         workspace_root: PathBuf,
         metadata_repo: Arc<dyn IAgentMetadataRepository>,
         acp_session_repo: Arc<dyn IAcpSessionRepository>,
+        user_repo: Arc<dyn IUserRepository>,
     }
 
     impl TestRepos {
         fn builder(&self) -> SessionContextBuilder<'_> {
-            SessionContextBuilder::new(&self.workspace_root, &self.metadata_repo, &self.acp_session_repo)
+            SessionContextBuilder::new(
+                &self.workspace_root,
+                &self.metadata_repo,
+                &self.acp_session_repo,
+                Some(self.user_repo.clone()),
+            )
         }
     }
 
@@ -481,7 +506,8 @@ mod tests {
         let pool = db.pool().clone();
         let metadata_repo: Arc<dyn IAgentMetadataRepository> =
             Arc::new(SqliteAgentMetadataRepository::new(pool.clone()));
-        let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool));
+        let acp_session_repo: Arc<dyn IAcpSessionRepository> = Arc::new(SqliteAcpSessionRepository::new(pool.clone()));
+        let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(pool.clone()));
         let workspace_root = std::env::temp_dir().join(format!(
             "aion-session-context-test-{}",
             aionui_common::generate_short_id()
@@ -490,6 +516,7 @@ mod tests {
             workspace_root,
             metadata_repo,
             acp_session_repo,
+            user_repo,
         }
     }
 
@@ -556,6 +583,40 @@ mod tests {
             AgentSessionKind::Aionrs(aionrs) => *aionrs,
             other => panic!("expected Aionrs context, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn roles_flow_into_conversation_context() {
+        let repos = setup().await;
+        // Usuario real + rol seed (migración 013) → debe aparecer en el contexto.
+        let user = repos.user_repo.create_user("ada", "h").await.unwrap();
+        repos.user_repo.assign_role(&user.id, "ingenieria").await.unwrap();
+
+        let mut row = row(
+            "acp",
+            serde_json::json!({"agent_id": "custom-agent-1", "backend": "claude", "agent_source": "custom"}),
+            None,
+        );
+        row.user_id = user.id.clone();
+
+        let context = repos.builder().build(&row).await.unwrap();
+        assert_eq!(context.conversation.user_id, user.id);
+        assert_eq!(context.conversation.roles, vec!["ingenieria".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn roles_empty_when_user_has_none() {
+        let repos = setup().await;
+        let user = repos.user_repo.create_user("bob", "h").await.unwrap();
+        let mut row = row(
+            "acp",
+            serde_json::json!({"agent_id": "custom-agent-1", "backend": "claude", "agent_source": "custom"}),
+            None,
+        );
+        row.user_id = user.id.clone();
+
+        let context = repos.builder().build(&row).await.unwrap();
+        assert!(context.conversation.roles.is_empty());
     }
 
     #[tokio::test]

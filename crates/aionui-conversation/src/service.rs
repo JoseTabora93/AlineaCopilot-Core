@@ -28,8 +28,8 @@ use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
-    UpsertConversationAssistantSnapshotParams,
+    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, IUserRepository,
+    SaveRuntimeStateParams, SortOrder, UpsertConversationAssistantSnapshotParams,
 };
 use aionui_extension::AssistantRuleDispatcher;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
@@ -248,6 +248,9 @@ pub struct ConversationService {
     assistant_state_repo: Arc<RwLock<Option<Arc<dyn IAssistantOverlayRepository>>>>,
     assistant_preference_repo: Arc<RwLock<Option<Arc<dyn IAssistantPreferenceRepository>>>>,
     assistant_dispatcher: Arc<RwLock<Option<Arc<dyn AssistantRuleDispatcher>>>>,
+    /// Resuelve los roles RBAC al construir el contexto de sesión (Fase 2 #5).
+    /// Slot opcional al estilo `mcp_server_repo`: `None` en tests que no lo wirean.
+    user_repo: Arc<RwLock<Option<Arc<dyn IUserRepository>>>>,
     runtime_state: Arc<ConversationRuntimeStateService>,
 
     // Repos for conversation, acp_session and agent_metadata access.
@@ -314,6 +317,7 @@ impl ConversationService {
             assistant_state_repo: Arc::new(RwLock::new(None)),
             assistant_preference_repo: Arc::new(RwLock::new(None)),
             assistant_dispatcher: Arc::new(RwLock::new(None)),
+            user_repo: Arc::new(RwLock::new(None)),
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
             conversation_repo,
@@ -337,6 +341,18 @@ impl ConversationService {
         if let Ok(mut guard) = self.mcp_server_repo.write() {
             *guard = Some(repo);
         }
+    }
+
+    /// Wire el repo de usuarios para resolver roles RBAC en el contexto de sesión.
+    pub fn with_user_repo(&self, repo: Arc<dyn IUserRepository>) {
+        if let Ok(mut guard) = self.user_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del repo de usuarios (clona el `Arc`, sin retener el guard).
+    fn user_repo_snapshot(&self) -> Option<Arc<dyn IUserRepository>> {
+        self.user_repo.read().ok().and_then(|g| g.clone())
     }
 
     pub fn with_assistant_definition_repo(&self, repo: Arc<dyn IAssistantDefinitionRepository>) {
@@ -2564,9 +2580,14 @@ impl ConversationService {
         row: &aionui_db::models::ConversationRow,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options(row)
-            .await
+        SessionContextBuilder::new(
+            &self.workspace_root,
+            &self.agent_metadata_repo,
+            &self.acp_session_repo,
+            self.user_repo_snapshot(),
+        )
+        .build_options(row)
+        .await
     }
 
     pub async fn build_task_options_for_runtime(
@@ -2575,9 +2596,14 @@ impl ConversationService {
         workspace_override: Option<&str>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options_with_workspace_override(row, workspace_override)
-            .await
+        SessionContextBuilder::new(
+            &self.workspace_root,
+            &self.agent_metadata_repo,
+            &self.acp_session_repo,
+            self.user_repo_snapshot(),
+        )
+        .build_options_with_workspace_override(row, workspace_override)
+        .await
     }
 
     pub(crate) async fn ensure_auto_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {

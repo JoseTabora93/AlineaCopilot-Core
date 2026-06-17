@@ -13,11 +13,7 @@ use tower::ServiceExt;
 async fn identity_pubkey_is_public_and_stable() {
     let (app, _services) = build_app().await;
 
-    let resp = app
-        .clone()
-        .oneshot(get_request("/api/identity/pubkey"))
-        .await
-        .unwrap();
+    let resp = app.clone().oneshot(get_request("/api/identity/pubkey")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "pubkey debe ser accesible sin auth");
 
     let json = body_json(resp).await;
@@ -28,5 +24,9 @@ async fn identity_pubkey_is_public_and_stable() {
     // Estable: un segundo request devuelve la misma clave (misma semilla en disco).
     let resp2 = app.oneshot(get_request("/api/identity/pubkey")).await.unwrap();
     let json2 = body_json(resp2).await;
-    assert_eq!(json2["public_key"].as_str().unwrap(), pk, "pubkey estable entre requests");
+    assert_eq!(
+        json2["public_key"].as_str().unwrap(),
+        pk,
+        "pubkey estable entre requests"
+    );
 }

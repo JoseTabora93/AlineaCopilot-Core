@@ -361,6 +361,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             conversation: ConversationContext {
                 conversation_id: row.id.clone(),
                 user_id: row.user_id,
+                roles: vec![],
                 agent_type: AgentType::Acp,
                 source: row.source,
             },
@@ -866,6 +867,7 @@ fn test_acp_build_options(conversation_id: String, workspace: String) -> BuildTa
         conversation: ConversationContext {
             conversation_id,
             user_id: "user1".into(),
+            roles: vec![],
             agent_type: aionui_common::AgentType::Acp,
             source: None,
         },

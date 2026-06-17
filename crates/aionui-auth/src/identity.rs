@@ -55,7 +55,9 @@ pub struct RequestIdentityService {
 impl RequestIdentityService {
     /// Construye desde una semilla de 32 bytes (persistida en el Core).
     pub fn from_seed(seed: [u8; 32]) -> Self {
-        Self { signing_key: SigningKey::from_bytes(&seed) }
+        Self {
+            signing_key: SigningKey::from_bytes(&seed),
+        }
     }
 
     /// Genera un keypair nuevo (primer arranque). La semilla devuelta DEBE persistirse
@@ -129,7 +131,14 @@ mod tests {
     fn round_trip_valid() {
         let s = svc();
         let token = s
-            .issue_for("u1", vec!["ingenieria".into()], Some("p1".into()), vec!["read".into()], 1_000, 60_000)
+            .issue_for(
+                "u1",
+                vec!["ingenieria".into()],
+                Some("p1".into()),
+                vec!["read".into()],
+                1_000,
+                60_000,
+            )
             .unwrap();
         let claims = s.verify(&token, 1_500).unwrap();
         assert_eq!(claims.user_id, "u1");

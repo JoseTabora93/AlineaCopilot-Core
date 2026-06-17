@@ -22,6 +22,9 @@ pub struct AgentSessionContext {
 pub struct ConversationContext {
     pub conversation_id: String,
     pub user_id: String,
+    /// Roles RBAC del usuario (eje 1), resueltos al construir el contexto.
+    /// Viajan al agente para emitir el token de identidad y aplicar scope.
+    pub roles: Vec<String>,
     pub agent_type: AgentType,
     pub source: Option<String>,
 }

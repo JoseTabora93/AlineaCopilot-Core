@@ -291,6 +291,7 @@ mod tests {
             conversation: ConversationContext {
                 conversation_id: conversation_id.into(),
                 user_id: "user-1".into(),
+                roles: vec![],
                 agent_type: AgentType::Acp,
                 source: None,
             },
