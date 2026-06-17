@@ -37,6 +37,7 @@ use aionui_team::team_routes;
 use crate::services::AppServices;
 
 use super::health::{guide_mcp_status, health_check};
+use super::identity::identity_pubkey;
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
 use super::trace::with_access_log;
 
@@ -221,6 +222,13 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .with_state(services.guide_mcp_config.clone())
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
 
+    // Identity public key — exempt from auth on purpose: a public key cannot
+    // forge tokens, and the agents (OpenClaw/Hermes) that verify signatures are
+    // not users, so they must read it without a session JWT (Fase 2 #5).
+    let identity_public = Router::new()
+        .route("/api/identity/pubkey", get(identity_pubkey))
+        .with_state(services.request_identity.clone());
+
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
     let public_assets = asset_routes(AssetRouterState::default());
@@ -250,7 +258,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
-        .merge(guide_mcp_authenticated);
+        .merge(guide_mcp_authenticated)
+        .merge(identity_public);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]

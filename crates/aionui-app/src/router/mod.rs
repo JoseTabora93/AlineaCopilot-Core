@@ -1,6 +1,7 @@
 //! HTTP router assembly for the application.
 
 mod health;
+mod identity;
 mod routes;
 mod state;
 mod team_conversation_adapters;
