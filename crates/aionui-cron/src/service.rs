@@ -263,9 +263,10 @@ impl CronService {
         }
     }
 
-    /// `true` si `user_id` puede crear un job ligado a `conversation_id`: o bien
-    /// está vacío (el job auto-provisiona su conversación), o bien la conversación
-    /// le pertenece. Impide enlazar un job a la conversación de otro (write-IDOR).
+    /// `true` si `user_id` puede crear un job ligado a `conversation_id`. Impide
+    /// enlazar un job a la conversación de OTRO usuario (write-IDOR). Se permite
+    /// cuando la conversación está vacía o aún no existe (el job la auto-provisiona
+    /// bajo el creador); se deniega **solo** si existe y pertenece a otro.
     pub async fn user_owns_conversation(&self, user_id: &str, conversation_id: &str) -> Result<bool, CronError> {
         if conversation_id.trim().is_empty() {
             return Ok(true);
@@ -276,7 +277,10 @@ impl CronService {
             .await?
             .map(|r| r.user_id)
             .filter(|u| !u.trim().is_empty());
-        Ok(owner.as_deref() == Some(user_id))
+        Ok(match owner {
+            Some(o) => o == user_id,
+            None => true,
+        })
     }
 
     /// Como [`list_jobs`](Self::list_jobs) pero solo los jobs que `user_id` posee.
