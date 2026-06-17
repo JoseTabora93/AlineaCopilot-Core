@@ -5,6 +5,7 @@ mod cookie;
 mod csrf;
 mod error;
 mod extract;
+pub mod identity;
 mod jwt;
 pub mod middleware;
 mod password;
@@ -19,6 +20,9 @@ pub use error::AuthError;
 
 // JWT service
 pub use jwt::{JwtService, TokenPayload, generate_random_secret_string, resolve_jwt_secret};
+
+// Request-identity (Ed25519 signed token per agent request — Fase 2 #5)
+pub use identity::{IdentityClaims, IdentityError, RequestIdentityService};
 
 // Password service
 pub use password::{
