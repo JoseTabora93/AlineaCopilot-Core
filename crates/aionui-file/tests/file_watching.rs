@@ -116,7 +116,7 @@ async fn stop_all_watches_clears_file_watches() {
     svc.start_watch(file_b.to_str().unwrap()).await.unwrap();
     settle().await;
 
-    svc.stop_all_watches().await.unwrap();
+    svc.stop_all_watches(None).await.unwrap();
     recorder.take_events();
 
     std::fs::write(&file_a, "a2").unwrap();
@@ -285,5 +285,41 @@ async fn office_watch_event_has_correct_fields() {
     assert!(
         data["workspace"].as_str().is_some(),
         "workspace should be present: {data:?}"
+    );
+}
+
+#[tokio::test]
+async fn stop_all_watches_scoped_only_clears_user_subtree() {
+    // Fase 2 #5: stop_all con un user_root solo limpia los watchers de ese
+    // subárbol; no toca los de otro usuario (cierra el DoS cross-usuario).
+    let user_root = tempfile::tempdir().unwrap();
+    let other = tempfile::tempdir().unwrap();
+    let mine = user_root.path().join("mine.txt");
+    let theirs = other.path().join("theirs.txt");
+    std::fs::write(&mine, "m").unwrap();
+    std::fs::write(&theirs, "t").unwrap();
+
+    let (svc, recorder) = make_service();
+    svc.start_watch(mine.to_str().unwrap()).await.unwrap();
+    svc.start_watch(theirs.to_str().unwrap()).await.unwrap();
+    settle().await;
+
+    svc.stop_all_watches(Some(user_root.path())).await.unwrap();
+    recorder.take_events();
+
+    // El watcher del OTRO usuario sigue activo.
+    std::fs::write(&theirs, "t2").unwrap();
+    settle().await;
+    assert!(
+        !recorder.take_events().is_empty(),
+        "el watcher de otro usuario NO debió limpiarse"
+    );
+
+    // El watcher del usuario SÍ se limpió.
+    std::fs::write(&mine, "m2").unwrap();
+    settle().await;
+    assert!(
+        recorder.take_events().is_empty(),
+        "el watcher del usuario debió limpiarse"
     );
 }

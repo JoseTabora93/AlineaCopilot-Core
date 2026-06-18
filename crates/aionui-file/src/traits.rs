@@ -115,8 +115,10 @@ pub trait IFileWatchService: Send + Sync {
     /// Stop watching a previously registered file.
     async fn stop_watch(&self, file_path: &str) -> Result<(), FileError>;
 
-    /// Stop all active file watches.
-    async fn stop_all_watches(&self) -> Result<(), FileError>;
+    /// Stop active file watches. `under = Some(user_root)` (multiusuario) limita
+    /// la limpieza a los watchers dentro del subárbol del usuario, evitando que un
+    /// usuario borre los watchers de otro (Fase 2 #5). `None` = limpia todos.
+    async fn stop_all_watches(&self, under: Option<&Path>) -> Result<(), FileError>;
 
     /// Start watching a workspace directory for new Office files
     /// (.pptx, .docx, .xlsx).

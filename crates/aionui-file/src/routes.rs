@@ -547,11 +547,13 @@ async fn stop_watch(
     Ok(Json(ApiResponse::success()))
 }
 
-async fn stop_all_watches(State(state): State<FileRouterState>) -> Result<Json<ApiResponse<()>>, ApiError> {
-    // NOTA (Fase 2 #5): los watchers son globales; este endpoint limpia los de
-    // TODOS los usuarios (DoS de funcionalidad cross-usuario, no exposición de
-    // datos). Aislar los watchers por usuario es follow-up.
-    state.watch_service.stop_all_watches().await?;
+async fn stop_all_watches(
+    State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    // En multiusuario limpia solo los watchers del subárbol del usuario, no los de
+    // todos (cierra el DoS cross-usuario; Fase 2 #5).
+    state.watch_service.stop_all_watches(scope_root(&scope)).await?;
     Ok(Json(ApiResponse::success()))
 }
 
