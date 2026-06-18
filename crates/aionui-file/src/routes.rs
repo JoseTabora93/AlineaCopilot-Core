@@ -183,14 +183,21 @@ pub fn file_routes(state: FileRouterState) -> Router {
 /// filesystem I/O.
 async fn browse_directory(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     Query(query): Query<BrowseDirectoryQuery>,
 ) -> Result<Json<ApiResponse<BrowseDirectoryResponse>>, ApiError> {
     let show_files = matches!(query.show_files.as_deref(), Some("true") | Some("1"));
     let raw_path = query.path.clone();
     let browse_roots = state.browse_roots.clone();
+    // En multiusuario el host-file picker se restringe al subárbol del usuario
+    // (Fase 2 #5): deja de exponer `/`, home y rutas fuera del subárbol.
+    let user_root = scope_root(&scope).map(std::path::Path::to_path_buf);
 
     let response = tokio::task::spawn_blocking(move || {
-        let roots = browse_roots.get();
+        let roots = match user_root {
+            Some(root) => vec![root],
+            None => browse_roots.get(),
+        };
         browse::browse(raw_path.as_deref(), show_files, &roots)
     })
     .await
@@ -490,18 +497,22 @@ async fn cancel_zip(
 
 async fn start_watch(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<FileWatchRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.file_path, scope_root(&scope))?;
     state.watch_service.start_watch(&req.file_path).await?;
     Ok(Json(ApiResponse::success()))
 }
 
 async fn stop_watch(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<FileWatchRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.file_path, scope_root(&scope))?;
     state.watch_service.stop_watch(&req.file_path).await?;
     Ok(Json(ApiResponse::success()))
 }
@@ -513,9 +524,11 @@ async fn stop_all_watches(State(state): State<FileRouterState>) -> Result<Json<A
 
 async fn start_office_watch(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<WorkspaceOfficeWatchRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let allowed_roots: Vec<&Path> = state.allowed_roots.iter().map(std::path::PathBuf::as_path).collect();
     crate::path_safety::validate_path_with_extra_root(&req.workspace, &allowed_roots, Some(Path::new(&req.workspace)))?;
     state.watch_service.start_office_watch(&req.workspace).await?;
@@ -524,9 +537,11 @@ async fn start_office_watch(
 
 async fn stop_office_watch(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<WorkspaceOfficeWatchRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state.watch_service.stop_office_watch(&req.workspace).await?;
     Ok(Json(ApiResponse::success()))
 }
@@ -537,36 +552,44 @@ async fn stop_office_watch(
 
 async fn snapshot_init(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SnapshotInfoResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let info = state.snapshot_service.init(&req.workspace).await?;
     Ok(Json(ApiResponse::ok(to_snapshot_info_response(info))))
 }
 
 async fn snapshot_info(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SnapshotInfoResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let info = state.snapshot_service.get_info(&req.workspace).await?;
     Ok(Json(ApiResponse::ok(to_snapshot_info_response(info))))
 }
 
 async fn snapshot_compare(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<SnapshotCompareResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let result = state.snapshot_service.compare(&req.workspace).await?;
     Ok(Json(ApiResponse::ok(to_compare_response(result))))
 }
 
 async fn snapshot_baseline(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotBaselineRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<Option<String>>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let content = state
         .snapshot_service
         .get_baseline_content(&req.workspace, &req.file_path)
@@ -576,9 +599,11 @@ async fn snapshot_baseline(
 
 async fn snapshot_stage_file(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotStageRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state
         .snapshot_service
         .stage_file(&req.workspace, &req.file_path)
@@ -588,18 +613,22 @@ async fn snapshot_stage_file(
 
 async fn snapshot_stage_all(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state.snapshot_service.stage_all(&req.workspace).await?;
     Ok(Json(ApiResponse::success()))
 }
 
 async fn snapshot_unstage_file(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotStageRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state
         .snapshot_service
         .unstage_file(&req.workspace, &req.file_path)
@@ -609,18 +638,22 @@ async fn snapshot_unstage_file(
 
 async fn snapshot_unstage_all(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state.snapshot_service.unstage_all(&req.workspace).await?;
     Ok(Json(ApiResponse::success()))
 }
 
 async fn snapshot_discard(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotDiscardRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state
         .snapshot_service
         .discard_file(&req.workspace, &req.file_path, req.operation)
@@ -630,9 +663,11 @@ async fn snapshot_discard(
 
 async fn snapshot_reset(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotDiscardRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state
         .snapshot_service
         .reset_file(&req.workspace, &req.file_path, req.operation)
@@ -642,18 +677,22 @@ async fn snapshot_reset(
 
 async fn snapshot_branches(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     let branches = state.snapshot_service.get_branches(&req.workspace).await?;
     Ok(Json(ApiResponse::ok(branches)))
 }
 
 async fn snapshot_dispose(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<SnapshotWorkspaceRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
     state.snapshot_service.dispose(&req.workspace).await?;
     Ok(Json(ApiResponse::success()))
 }
