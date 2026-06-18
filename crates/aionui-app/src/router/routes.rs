@@ -18,7 +18,7 @@ use aionui_api_types::ErrorResponse;
 use aionui_assets::{AssetRouterState, asset_routes};
 use aionui_assistant::assistant_routes;
 use aionui_auth::{
-    AuthRouterState, AuthState, auth_middleware, auth_routes, csrf_middleware, security_headers_middleware,
+    AuthRouterState, AuthState, CurrentUser, auth_middleware, auth_routes, csrf_middleware, security_headers_middleware,
 };
 use aionui_channel::channel_routes;
 #[cfg(feature = "weixin")]
@@ -26,7 +26,7 @@ use aionui_channel::weixin_login_route;
 use aionui_conversation::{conversation_ops_routes, conversation_routes};
 use aionui_cron::cron_routes;
 use aionui_extension::{extension_routes, hub_routes, skill_routes};
-use aionui_file::file_routes;
+use aionui_file::{UserFileScope, file_routes};
 use aionui_mcp::mcp_routes;
 use aionui_office::{office_proxy_routes, office_routes};
 use aionui_realtime::{WsHandlerState, ws_upgrade_handler};
@@ -168,9 +168,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let connection_test_authenticated = connection_test_routes(states.connection_test)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // File routes protected by auth middleware
-    let file_authenticated =
-        file_routes(states.file).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    // File routes protected by auth middleware + per-user file-scope injection
+    // (Fase 2 #5). `inject_file_scope` runs AFTER auth (inner layer) so it can
+    // read `CurrentUser`; it computes the user's allowed subtree and inserts it
+    // as `UserFileScope` for the handlers' `enforce_user_scope` guard.
+    let file_scope_state = FileScopeState {
+        work_dir: services.work_dir.clone(),
+        enforce: services.enforce_file_scope,
+    };
+    let file_authenticated = file_routes(states.file)
+        .route_layer(from_fn_with_state(file_scope_state, inject_file_scope))
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // MCP routes protected by auth middleware
     let mcp_authenticated =
@@ -306,6 +314,33 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     } else {
         router
     }
+}
+
+#[derive(Clone)]
+struct FileScopeState {
+    work_dir: std::path::PathBuf,
+    enforce: bool,
+}
+
+/// Inserta `UserFileScope` (Fase 2 #5) leyendo `CurrentUser` (puesto por
+/// `auth_middleware`, que corre antes). En multiusuario (`!local`) el subárbol
+/// permitido es `{work_dir}/users/{user.id}`; en local queda `None` → sin
+/// restricción por-usuario (la sandbox global de `allowed_roots` sigue aplicando).
+async fn inject_file_scope(
+    axum::extract::State(cfg): axum::extract::State<FileScopeState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let scope = request
+        .extensions()
+        .get::<CurrentUser>()
+        .map(|user| {
+            let root = (cfg.enforce && !user.id.trim().is_empty()).then(|| cfg.work_dir.join("users").join(&user.id));
+            UserFileScope(root)
+        })
+        .unwrap_or_default();
+    request.extensions_mut().insert(scope);
+    next.run(request).await
 }
 
 async fn normalize_boundary_error_response(request: Request, next: Next) -> Response {

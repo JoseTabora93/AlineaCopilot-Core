@@ -28,6 +28,11 @@ pub(crate) struct SessionContextBuilder<'a> {
     /// Resuelve los roles RBAC del usuario. `None` en contextos sin repo de
     /// usuarios (algunos tests): los roles quedan vacíos.
     user_repo: Option<Arc<dyn IUserRepository>>,
+    /// Modo multiusuario (`!local`). Cuando es `true`, los workspaces auto se
+    /// namespacean bajo `users/{user_id}/` para que la segregación por subárbol
+    /// del file-service funcione (Fase 2 #5). En desktop (`false`) se mantiene el
+    /// layout `conversations/{id}` para no romper los workspaces existentes.
+    multiuser: bool,
 }
 
 impl<'a> SessionContextBuilder<'a> {
@@ -36,12 +41,24 @@ impl<'a> SessionContextBuilder<'a> {
         agent_metadata_repo: &'a Arc<dyn IAgentMetadataRepository>,
         acp_session_repo: &'a Arc<dyn IAcpSessionRepository>,
         user_repo: Option<Arc<dyn IUserRepository>>,
+        multiuser: bool,
     ) -> Self {
         Self {
             workspace_root,
             agent_metadata_repo,
             acp_session_repo,
             user_repo,
+            multiuser,
+        }
+    }
+
+    /// Raíz de workspaces del usuario: `workspace_root/users/{user_id}` en
+    /// multiusuario, o `workspace_root` tal cual en desktop.
+    fn scoped_workspace_root(&self, user_id: &str) -> PathBuf {
+        if self.multiuser && !user_id.trim().is_empty() {
+            self.workspace_root.join("users").join(user_id)
+        } else {
+            self.workspace_root.to_path_buf()
         }
     }
 
@@ -115,8 +132,8 @@ impl<'a> SessionContextBuilder<'a> {
         extra: &serde_json::Value,
         workspace_override: Option<&str>,
     ) -> Result<WorkspaceContext, ConversationError> {
-        let expected_auto_workspace =
-            expected_auto_workspace_path(self.workspace_root, &row.id, agent_type, extra.get("backend"));
+        let ws_root = self.scoped_workspace_root(&row.user_id);
+        let expected_auto_workspace = expected_auto_workspace_path(&ws_root, &row.id, agent_type, extra.get("backend"));
         let existing_stored_path = extra
             .get("workspace")
             .and_then(serde_json::Value::as_str)
@@ -492,11 +509,16 @@ mod tests {
 
     impl TestRepos {
         fn builder(&self) -> SessionContextBuilder<'_> {
+            self.builder_with_mode(false)
+        }
+
+        fn builder_with_mode(&self, multiuser: bool) -> SessionContextBuilder<'_> {
             SessionContextBuilder::new(
                 &self.workspace_root,
                 &self.metadata_repo,
                 &self.acp_session_repo,
                 Some(self.user_repo.clone()),
+                multiuser,
             )
         }
     }
@@ -845,6 +867,31 @@ mod tests {
         assert!(!context.workspace.is_custom);
         assert!(context.workspace.stored_path.is_empty());
         assert!(context.workspace.path.ends_with("aionrs-temp-conv-1"));
+    }
+
+    #[tokio::test]
+    async fn multiuser_namespaces_workspace_under_user() {
+        let repos = setup().await;
+        let row = row("aionrs", serde_json::json!({}), None); // user_id = "user-1"
+
+        // Desktop (local): layout plano conversations/... sin segmento users/.
+        let local = repos.builder_with_mode(false).build(&row).await.unwrap();
+        assert!(local.workspace.path.contains("conversations"));
+        assert!(
+            !local.workspace.path.contains("users"),
+            "local: {}",
+            local.workspace.path
+        );
+
+        // Multiusuario: namespaced bajo users/{user_id}/conversations/.
+        let multi = repos.builder_with_mode(true).build(&row).await.unwrap();
+        assert!(
+            multi.workspace.path.contains("users") && multi.workspace.path.contains("user-1"),
+            "multi: {}",
+            multi.workspace.path
+        );
+        assert!(multi.workspace.path.ends_with("aionrs-temp-conv-1"));
+        assert!(!multi.workspace.is_custom);
     }
 
     #[tokio::test]

@@ -251,6 +251,9 @@ pub struct ConversationService {
     /// Resuelve los roles RBAC al construir el contexto de sesión (Fase 2 #5).
     /// Slot opcional al estilo `mcp_server_repo`: `None` en tests que no lo wirean.
     user_repo: Arc<RwLock<Option<Arc<dyn IUserRepository>>>>,
+    /// Modo multiusuario (`!local`): namespacea los workspaces auto bajo
+    /// `users/{user_id}/` para la segregación de ficheros (Fase 2 #5).
+    multiuser: bool,
     runtime_state: Arc<ConversationRuntimeStateService>,
 
     // Repos for conversation, acp_session and agent_metadata access.
@@ -318,12 +321,20 @@ impl ConversationService {
             assistant_preference_repo: Arc::new(RwLock::new(None)),
             assistant_dispatcher: Arc::new(RwLock::new(None)),
             user_repo: Arc::new(RwLock::new(None)),
+            multiuser: false,
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
             conversation_repo,
             agent_metadata_repo,
             acp_session_repo,
         }
+    }
+
+    /// Activa el modo multiusuario (`!local`): workspaces auto bajo
+    /// `users/{user_id}/` para la segregación de ficheros (Fase 2 #5).
+    pub fn with_multiuser(mut self, multiuser: bool) -> Self {
+        self.multiuser = multiuser;
+        self
     }
 
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
@@ -2585,6 +2596,7 @@ impl ConversationService {
             &self.agent_metadata_repo,
             &self.acp_session_repo,
             self.user_repo_snapshot(),
+            self.multiuser,
         )
         .build_options(row)
         .await
@@ -2601,6 +2613,7 @@ impl ConversationService {
             &self.agent_metadata_repo,
             &self.acp_session_repo,
             self.user_repo_snapshot(),
+            self.multiuser,
         )
         .build_options_with_workspace_override(row, workspace_override)
         .await

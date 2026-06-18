@@ -90,6 +90,23 @@ pub fn validate_path_for_write(path: &str, allowed_roots: &[&Path]) -> Result<Pa
     Ok(canonical_parent.join(file_name))
 }
 
+/// Enforce que `path` cae dentro del subárbol del usuario (Fase 2 #5).
+///
+/// `user_root = None` → modo local/single-user: sin restricción por-usuario
+/// (la validación global de `allowed_roots` del FileService sigue aplicando).
+/// `Some(root)` → multiusuario: `path` (o su directorio padre, para ficheros
+/// que aún no existen) debe estar dentro de `root`, o se rechaza con
+/// `PathOutsideSandbox`. Reusa la canonicalización (symlinks + `..`) de
+/// [`validate_path`]/[`validate_path_for_write`].
+pub fn enforce_user_scope(path: &str, user_root: Option<&Path>) -> Result<(), FileError> {
+    let Some(root) = user_root else {
+        return Ok(());
+    };
+    validate_path(path, &[root])
+        .or_else(|_| validate_path_for_write(path, &[root]))
+        .map(|_| ())
+}
+
 /// Check whether a raw path string contains suspicious traversal patterns.
 ///
 /// This is a fast pre-check that catches obvious `..` usage before the
@@ -279,5 +296,33 @@ mod tests {
         let result = validate_path_with_extra_root(file.to_str().unwrap(), &[sandbox.path()], Some(workspace.path()));
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), fs::canonicalize(file).unwrap());
+    }
+
+    #[test]
+    fn enforce_user_scope_none_is_unrestricted() {
+        let outside = tempfile::tempdir().unwrap();
+        let f = outside.path().join("x.txt");
+        fs::write(&f, "x").unwrap();
+        assert!(enforce_user_scope(f.to_str().unwrap(), None).is_ok());
+    }
+
+    #[test]
+    fn enforce_user_scope_rejects_outside_user_root() {
+        let user_root = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let f = other.path().join("secret.txt");
+        fs::write(&f, "s").unwrap();
+        assert!(enforce_user_scope(f.to_str().unwrap(), Some(user_root.path())).is_err());
+
+        let mine = user_root.path().join("mine.txt");
+        fs::write(&mine, "m").unwrap();
+        assert!(enforce_user_scope(mine.to_str().unwrap(), Some(user_root.path())).is_ok());
+    }
+
+    #[test]
+    fn enforce_user_scope_allows_new_file_in_user_root() {
+        let user_root = tempfile::tempdir().unwrap();
+        let new = user_root.path().join("new.txt"); // no existe aún
+        assert!(enforce_user_scope(new.to_str().unwrap(), Some(user_root.path())).is_ok());
     }
 }

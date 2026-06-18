@@ -49,6 +49,8 @@ pub fn init_environment(cli: &Cli, merged_path: &str) -> Result<ServerEnvironmen
         work_dir,
         app_version: cli.app_version.clone(),
         local: cli.local,
+        // Deriva de `!local`: segregación de ficheros por usuario en multiusuario.
+        enforce_file_scope: None,
     };
     info!(
         "Running in {} mode — authentication is {}",

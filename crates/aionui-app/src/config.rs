@@ -14,12 +14,23 @@ pub struct AppConfig {
     pub app_version: String,
     /// Run in local embedded mode (skip authentication, use system_default_user).
     pub local: bool,
+    /// Activa la segregación de ficheros por usuario (Fase 2 #5): cada usuario
+    /// solo accede a su subárbol `{work_dir}/users/{id}`. `None` deriva de
+    /// `!local` (multiusuario seguro por defecto); los tests lo fijan a
+    /// `Some(false)` para ejercitar ops de ficheros con paths arbitrarios.
+    pub enforce_file_scope: Option<bool>,
 }
 
 impl AppConfig {
     /// Format as `host:port` for socket binding.
     pub fn socket_addr(&self) -> String {
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// ¿Aplicar el guard de scope de ficheros por-usuario? Deriva de `!local`
+    /// cuando no está fijado explícitamente.
+    pub fn enforce_file_scope(&self) -> bool {
+        self.enforce_file_scope.unwrap_or(!self.local)
     }
 
     /// Path to the SQLite database file.
@@ -37,6 +48,7 @@ impl Default for AppConfig {
             work_dir: PathBuf::from("data"),
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             local: false,
+            enforce_file_scope: None,
         }
     }
 }

@@ -27,6 +27,10 @@ pub fn isolated_config() -> AppConfig {
     let _ = std::fs::remove_dir_all(&dir);
     AppConfig {
         data_dir: dir,
+        // E2E corre en multiusuario (auth on) pero con el guard de scope de
+        // ficheros por-usuario (Fase 2 #5) DESACTIVADO: las pruebas usan paths
+        // temporales arbitrarios. La segregación se prueba aparte con su flag.
+        enforce_file_scope: Some(false),
         ..Default::default()
     }
 }
@@ -89,6 +93,21 @@ pub async fn build_app_with_noop_opener() -> (axum::Router, AppServices) {
         aionui_shell::NoopSystemOpener,
     )));
     let router = create_router_with_states(&services, states);
+    (router, services)
+}
+
+/// App multiusuario con la segregación de ficheros por usuario ACTIVA
+/// (`enforce_file_scope = Some(true)`) y un `work_dir` conocido, para probar el
+/// guard (Fase 2 #5). El subárbol del usuario es `{work_dir}/users/{user_id}`.
+pub async fn build_app_with_file_scope(work_dir: std::path::PathBuf) -> (axum::Router, AppServices) {
+    let db = aionui_db::init_database_memory().await.unwrap();
+    let cfg = AppConfig {
+        work_dir,
+        enforce_file_scope: Some(true),
+        ..isolated_config()
+    };
+    let services = AppServices::from_config(db, &cfg).await.unwrap();
+    let router = create_router(&services).await.expect("build router");
     (router, services)
 }
 

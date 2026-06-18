@@ -6,7 +6,9 @@ use axum::http::StatusCode;
 use serde_json::json;
 use tower::ServiceExt;
 
-use common::{body_json, build_app, build_app_with_file_roots, json_with_token, setup_and_login};
+use common::{
+    body_json, build_app, build_app_with_file_roots, build_app_with_file_scope, json_with_token, setup_and_login,
+};
 
 // ===========================================================================
 // Auth guard
@@ -954,4 +956,48 @@ async fn upload_body_exceeding_30mb_returns_413() {
     assert_eq!(json["success"], false);
     assert_eq!(json["code"], "PAYLOAD_TOO_LARGE");
     assert!(json["error"].is_string());
+}
+
+#[tokio::test]
+async fn file_scope_blocks_cross_user_path() {
+    // Multiusuario con segregación de ficheros ACTIVA (Fase 2 #5).
+    let work_dir = tempfile::tempdir().unwrap();
+    let (mut app, services) = build_app_with_file_scope(work_dir.path().to_path_buf()).await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+
+    // Subárbol del usuario logueado = work_dir/users/{system_user_id}.
+    let uid = services.user_repo.get_system_user().await.unwrap().unwrap().id;
+    let user_root = work_dir.path().join("users").join(&uid);
+    std::fs::create_dir_all(&user_root).unwrap();
+    let mine = user_root.join("mine.txt");
+    std::fs::write(&mine, "secret").unwrap();
+
+    // Dentro del subárbol → permitido.
+    let req = json_with_token(
+        "POST",
+        "/api/fs/read",
+        json!({ "path": mine.to_str().unwrap() }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "leer fichero propio debe permitirse");
+
+    // Fuera del subárbol → 403.
+    let other = tempfile::tempdir().unwrap();
+    let theirs = other.path().join("theirs.txt");
+    std::fs::write(&theirs, "other").unwrap();
+    let req = json_with_token(
+        "POST",
+        "/api/fs/read",
+        json!({ "path": theirs.to_str().unwrap() }),
+        &token,
+        &csrf,
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "leer fuera del subárbol debe rechazarse"
+    );
 }
