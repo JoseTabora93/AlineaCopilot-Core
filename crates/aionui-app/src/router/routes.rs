@@ -331,14 +331,27 @@ async fn inject_file_scope(
     mut request: Request,
     next: Next,
 ) -> Response {
-    let scope = request
-        .extensions()
-        .get::<CurrentUser>()
-        .map(|user| {
-            let root = (cfg.enforce && !user.id.trim().is_empty()).then(|| cfg.work_dir.join("users").join(&user.id));
-            UserFileScope(root)
-        })
-        .unwrap_or_default();
+    let scope = if !cfg.enforce {
+        // Sin segregación (desktop/dev): la sandbox global de allowed_roots aplica.
+        UserFileScope(None)
+    } else {
+        match request
+            .extensions()
+            .get::<CurrentUser>()
+            .filter(|u| !u.id.trim().is_empty())
+        {
+            Some(user) => {
+                let root = cfg.work_dir.join("users").join(&user.id);
+                // Crea el subárbol idempotentemente para que la 1ª op del usuario
+                // no falle por no existir el root (su canonicalize fallaría).
+                let _ = std::fs::create_dir_all(&root);
+                UserFileScope(Some(root))
+            }
+            // Fail-closed: con enforce activo y sin usuario válido, un subárbol
+            // inalcanzable → todos los /api/fs/* responden 403 (no fail-open).
+            None => UserFileScope(Some(cfg.work_dir.join("users").join("__deny_no_user__"))),
+        }
+    };
     request.extensions_mut().insert(scope);
     next.run(request).await
 }

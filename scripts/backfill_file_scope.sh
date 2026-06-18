@@ -9,8 +9,8 @@
 # `{work_dir}/conversations/...`, que el guard por-subárbol rechazaría.
 #
 # Este script migra los workspaces existentes al layout namespaced y actualiza
-# `extra.workspace` en la DB, mapeando conversación → dueño (user_id) desde la
-# tabla `conversations`.
+# `extra.workspace` (vía json_set sobre la clave $.workspace, no REPLACE textual)
+# en la DB, mapeando conversación → dueño (user_id) desde la tabla `conversations`.
 #
 # Idempotente: omite los que ya estén migrados o sin user_id resoluble.
 # Hacer SIEMPRE un backup de `{work_dir}` y de la DB antes de ejecutar.
@@ -31,7 +31,10 @@ if [ ! -d "$CONV_DIR" ]; then
 fi
 command -v sqlite3 >/dev/null || { echo "sqlite3 no está instalado"; exit 1; }
 
-run() { if [ "$DRY_RUN" = "--dry-run" ]; then echo "[dry-run] $*"; else eval "$@"; fi; }
+# Escapa comillas simples para SQL (' -> '').
+sql_quote() { printf "%s" "$1" | sed "s/'/''/g"; }
+
+dry() { [ "$DRY_RUN" = "--dry-run" ]; }
 
 migrated=0
 skipped=0
@@ -41,24 +44,34 @@ for dir in "$CONV_DIR"/*/; do
   # El nombre del workspace es `{label}-temp-{conversation_id}`.
   conv_id="${name##*-temp-}"
   if [ "$conv_id" = "$name" ]; then
-    echo "skip '$name' (no matchea el patrón *-temp-<id>)"; skipped=$((skipped+1)); continue
+    echo "skip '$name' (no matchea el patrón *-temp-<id>)"; skipped=$((skipped + 1)); continue
   fi
 
-  user_id="$(sqlite3 "$DB" "SELECT user_id FROM conversations WHERE id = '${conv_id//\'/\'\'}' LIMIT 1;")"
+  conv_q="$(sql_quote "$conv_id")"
+  user_id="$(sqlite3 "$DB" "SELECT user_id FROM conversations WHERE id = '$conv_q' LIMIT 1;")"
   if [ -z "$user_id" ]; then
-    echo "skip '$name' (sin user_id en la DB para conv '$conv_id')"; skipped=$((skipped+1)); continue
+    echo "skip '$name' (sin user_id en la DB para conv '$conv_id')"; skipped=$((skipped + 1)); continue
   fi
 
   dest_dir="$WORK_DIR/users/$user_id/conversations"
   old_path="$CONV_DIR/$name"
   new_path="$dest_dir/$name"
+  old_q="$(sql_quote "$old_path")"
+  new_q="$(sql_quote "$new_path")"
+  # Solo actualiza extra.workspace si justamente apuntaba al path viejo.
+  update_sql="UPDATE conversations SET extra = json_set(extra, '\$.workspace', '$new_q') WHERE id = '$conv_q' AND json_extract(extra, '\$.workspace') = '$old_q';"
 
-  run "mkdir -p '$dest_dir'"
-  run "mv '$old_path' '$new_path'"
-  # Reescribe el path en extra.workspace (si estaba persistido el path viejo).
-  run "sqlite3 '$DB' \"UPDATE conversations SET extra = REPLACE(extra, '${old_path//\'/\'\'}', '${new_path//\'/\'\'}') WHERE id = '${conv_id//\'/\'\'}';\""
+  if dry; then
+    echo "[dry-run] mkdir -p '$dest_dir'"
+    echo "[dry-run] mv '$old_path' -> '$new_path'"
+    echo "[dry-run] sqlite: $update_sql"
+  else
+    mkdir -p "$dest_dir"
+    mv "$old_path" "$new_path"
+    sqlite3 "$DB" "$update_sql"
+  fi
   echo "migrado '$name' -> users/$user_id/conversations/"
-  migrated=$((migrated+1))
+  migrated=$((migrated + 1))
 done
 
 echo "Backfill completo: $migrated migrados, $skipped omitidos."

@@ -1001,3 +1001,52 @@ async fn file_scope_blocks_cross_user_path() {
         "leer fuera del subárbol debe rechazarse"
     );
 }
+
+#[tokio::test]
+async fn file_scope_blocks_cross_user_copy_and_zip() {
+    let work_dir = tempfile::tempdir().unwrap();
+    let (mut app, services) = build_app_with_file_scope(work_dir.path().to_path_buf()).await;
+    let (token, csrf) = setup_and_login(&mut app, &services, "admin", "StrongP@ss1").await;
+    let uid = services.user_repo.get_system_user().await.unwrap().unwrap().id;
+    let user_root = work_dir.path().join("users").join(&uid);
+    std::fs::create_dir_all(&user_root).unwrap();
+
+    // Fichero "ajeno" fuera del subárbol del usuario.
+    let other = tempfile::tempdir().unwrap();
+    let foreign = other.path().join("foreign.txt");
+    std::fs::write(&foreign, "secret").unwrap();
+
+    // copy con FUENTE fuera del subárbol → 403 (no exfiltración).
+    let req = json_with_token(
+        "POST",
+        "/api/fs/copy",
+        json!({ "file_paths": [foreign.to_str().unwrap()], "workspace": user_root.to_str().unwrap() }),
+        &token,
+        &csrf,
+    );
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "copiar fuente ajena debe rechazarse"
+    );
+
+    // zip con entrada Disk fuera del subárbol → 403.
+    let zip_out = user_root.join("out.zip");
+    let req = json_with_token(
+        "POST",
+        "/api/fs/zip",
+        json!({
+            "path": zip_out.to_str().unwrap(),
+            "files": [{ "name": "foreign.txt", "file_path": foreign.to_str().unwrap() }]
+        }),
+        &token,
+        &csrf,
+    );
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "zipear fichero ajeno debe rechazarse"
+    );
+}

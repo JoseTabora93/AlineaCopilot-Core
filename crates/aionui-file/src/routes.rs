@@ -115,6 +115,15 @@ fn scope_root(scope: &Option<axum::Extension<UserFileScope>>) -> Option<&std::pa
     scope.as_ref().and_then(|e| e.0.0.as_deref())
 }
 
+/// Rechaza un `file_path` con traversal (`..`) o NUL. Para campos relativos al
+/// workspace (snapshot) que de otro modo podrían escapar del subárbol (Fase 2 #5).
+fn enforce_no_traversal(file_path: &str) -> Result<(), ApiError> {
+    if crate::path_safety::has_traversal(file_path) {
+        return Err(ApiError::BadRequest(format!("invalid file_path '{file_path}'")));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Router builder
 // ---------------------------------------------------------------------------
@@ -303,8 +312,16 @@ async fn copy_files(
     body: Result<Json<CopyFilesRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<CopyFilesResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
-    // El destino (workspace) debe estar en el subárbol del usuario.
-    crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    // Destino Y fuentes deben estar en el subárbol del usuario: si no, un usuario
+    // podría copiar ficheros de otro (`users/{B}/...`) a su workspace y leerlos.
+    let user_root = scope_root(&scope);
+    crate::path_safety::enforce_user_scope(&req.workspace, user_root)?;
+    for src in &req.file_paths {
+        crate::path_safety::enforce_user_scope(src, user_root)?;
+    }
+    if let Some(src_root) = req.source_root.as_deref() {
+        crate::path_safety::enforce_user_scope(src_root, user_root)?;
+    }
     let result = state
         .file_service
         .copy_files_to_workspace(&req.file_paths, &req.workspace, req.source_root.as_deref())
@@ -345,6 +362,9 @@ async fn create_temp_file(
     body: Result<Json<CreateTempFileRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // Sin guard de scope: solo recibe `file_name` (no un path), pero escribe en un
+    // namespace temp COMPARTIDO entre usuarios (no `users/{id}`). No expone paths
+    // ajenos; el aislamiento real del temp por usuario es follow-up (Fase 2 #5).
     let path = state.file_service.create_temp_file(&req.file_name).await?;
     Ok(Json(ApiResponse::ok(path)))
 }
@@ -471,10 +491,20 @@ async fn fetch_remote_image(
 
 async fn create_zip(
     State(state): State<FileRouterState>,
+    scope: Option<axum::Extension<UserFileScope>>,
     body: Result<Json<ZipRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<bool>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // Salida Y fuentes en disco deben estar en el subárbol del usuario: si no, un
+    // usuario podría zipear ficheros de otro (lectura) o escribir en su subárbol.
+    let user_root = scope_root(&scope);
+    crate::path_safety::enforce_user_scope(&req.path, user_root)?;
     let entries: Vec<ZipEntry> = req.files.into_iter().map(to_zip_entry).collect();
+    for entry in &entries {
+        if let ZipEntry::Disk { file_path, .. } = entry {
+            crate::path_safety::enforce_user_scope(file_path, user_root)?;
+        }
+    }
     let ok = state
         .file_service
         .create_zip(&req.path, entries, req.request_id)
@@ -518,6 +548,9 @@ async fn stop_watch(
 }
 
 async fn stop_all_watches(State(state): State<FileRouterState>) -> Result<Json<ApiResponse<()>>, ApiError> {
+    // NOTA (Fase 2 #5): los watchers son globales; este endpoint limpia los de
+    // TODOS los usuarios (DoS de funcionalidad cross-usuario, no exposición de
+    // datos). Aislar los watchers por usuario es follow-up.
     state.watch_service.stop_all_watches().await?;
     Ok(Json(ApiResponse::success()))
 }
@@ -590,6 +623,7 @@ async fn snapshot_baseline(
 ) -> Result<Json<ApiResponse<Option<String>>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    enforce_no_traversal(&req.file_path)?;
     let content = state
         .snapshot_service
         .get_baseline_content(&req.workspace, &req.file_path)
@@ -604,6 +638,7 @@ async fn snapshot_stage_file(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    enforce_no_traversal(&req.file_path)?;
     state
         .snapshot_service
         .stage_file(&req.workspace, &req.file_path)
@@ -629,6 +664,7 @@ async fn snapshot_unstage_file(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    enforce_no_traversal(&req.file_path)?;
     state
         .snapshot_service
         .unstage_file(&req.workspace, &req.file_path)
@@ -654,6 +690,7 @@ async fn snapshot_discard(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    enforce_no_traversal(&req.file_path)?;
     state
         .snapshot_service
         .discard_file(&req.workspace, &req.file_path, req.operation)
@@ -668,6 +705,7 @@ async fn snapshot_reset(
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
     crate::path_safety::enforce_user_scope(&req.workspace, scope_root(&scope))?;
+    enforce_no_traversal(&req.file_path)?;
     state
         .snapshot_service
         .reset_file(&req.workspace, &req.file_path, req.operation)

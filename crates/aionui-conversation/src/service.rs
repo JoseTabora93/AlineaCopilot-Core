@@ -2625,12 +2625,15 @@ impl ConversationService {
             return;
         }
         let backend = context_backend_value(context);
-        let expected_workspace = expected_auto_workspace_path(
-            &self.workspace_root,
-            &row.id,
-            &context.conversation.agent_type,
-            backend.as_ref(),
-        );
+        // Misma raíz scopeada que el builder (Fase 2 #5): en multiusuario los
+        // workspaces viven bajo users/{user_id}/, así el match no falla siempre.
+        let ws_root = if self.multiuser && !row.user_id.trim().is_empty() {
+            self.workspace_root.join("users").join(&row.user_id)
+        } else {
+            self.workspace_root.clone()
+        };
+        let expected_workspace =
+            expected_auto_workspace_path(&ws_root, &row.id, &context.conversation.agent_type, backend.as_ref());
 
         let workspace = PathBuf::from(context.workspace.path.trim());
         if workspace != expected_workspace {
