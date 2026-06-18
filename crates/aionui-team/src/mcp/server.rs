@@ -285,20 +285,20 @@ fn handle_initialize(request: &super::protocol::JsonRpcRequest, auth_token: &str
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    if token != auth_token {
-        return InitResult::Response(JsonRpcResponse::error(
-            request.id,
-            INVALID_REQUEST,
-            "Authentication failed: invalid auth_token",
-        ));
-    }
-
-    let slot_id = params
-        .and_then(|p| p.get("slot_id"))
-        .or_else(|| params.and_then(|p| p.get("slotId")))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_owned();
+    // El slot_id va ligado al token (Fase 2 #5): se toma del token verificado, NO
+    // del param del cliente, para que un teammate no pueda reclamar el slot —y por
+    // tanto el rol (Lead)— de otro. Cierra el slot-spoof. El token global crudo
+    // (sin scope) ya no autentica.
+    let slot_id = match aionui_common::guide_token::verify(auth_token, token) {
+        Some((slot_id, _team_id)) => slot_id,
+        None => {
+            return InitResult::Response(JsonRpcResponse::error(
+                request.id,
+                INVALID_REQUEST,
+                "Authentication failed: invalid auth_token",
+            ));
+        }
+    };
 
     let resp = JsonRpcResponse::success(
         request.id,
@@ -897,6 +897,38 @@ async fn http_mcp_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn init_request(token: &str, slot_id_param: &str) -> super::super::protocol::JsonRpcRequest {
+        super::super::protocol::JsonRpcRequest {
+            jsonrpc: "2.0".to_owned(),
+            id: Some(1),
+            method: "initialize".to_owned(),
+            params: Some(json!({ "auth_token": token, "slot_id": slot_id_param })),
+        }
+    }
+
+    #[test]
+    fn initialize_takes_slot_id_from_token_not_param() {
+        let secret = "team-secret";
+        // Token ligado al slot "s1"; el param intenta suplantar al líder.
+        let token = aionui_common::guide_token::scope(secret, "s1", "team-1");
+        match handle_initialize(&init_request(&token, "leader"), secret) {
+            InitResult::Authenticated(slot_id, _) => {
+                assert_eq!(slot_id, "s1", "el slot_id debe venir del token, no del param");
+            }
+            _ => panic!("expected authenticated"),
+        }
+    }
+
+    #[test]
+    fn initialize_rejects_raw_global_token() {
+        // El token global crudo (sin scope) ya no autentica → cierra el slot-spoof.
+        let secret = "team-secret";
+        assert!(matches!(
+            handle_initialize(&init_request(secret, "s1"), secret),
+            InitResult::Response(_)
+        ));
+    }
 
     /// Non-Lead callers are rejected at the dispatch layer with the
     /// "Only Lead ..." phrasing. Service weak is never upgraded because

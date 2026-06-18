@@ -114,12 +114,15 @@ async fn setup() -> TestEnv {
 async fn connect_and_init(port: u16, token: &str, slot_id: &str) -> TcpStream {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).await.unwrap();
 
+    // El server exige un token ligado al slot (Fase 2 #5): `token` es el secreto
+    // crudo del server; lo escalamos al slot como hace mcp_stdio_config.
+    let scoped = aionui_common::guide_token::scope(token, slot_id, "team-test");
     let init_req = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
-            "auth_token": token,
+            "auth_token": scoped,
             "slot_id": slot_id,
             "protocolVersion": "2024-11-05",
             "capabilities": {},
