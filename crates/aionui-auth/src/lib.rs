@@ -1,6 +1,7 @@
 #![warn(clippy::disallowed_types)]
 
 //! JWT authentication, password hashing, CSRF protection, rate limiting, and auth middleware.
+mod admin;
 mod cookie;
 mod csrf;
 mod error;
@@ -65,3 +66,6 @@ pub use qr_token::QrTokenStore;
 
 // Routes
 pub use routes::{AuthRouterState, auth_routes};
+
+// Admin RBAC routes (gestión de roles — Fase 2 #5)
+pub use admin::{AdminRouterState, admin_routes};

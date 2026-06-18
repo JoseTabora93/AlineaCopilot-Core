@@ -32,7 +32,7 @@ pub use repository::{
     IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
     IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
     IOAuthTokenRepository, IProviderRepository, IRemoteAgentRepository, ISettingsRepository, ITeamRepository,
-    IUserRepository, PersistedSessionState, SaveRuntimeStateParams, SqliteAcpSessionRepository,
+    IUserRepository, PersistedSessionState, RoleRemoval, SaveRuntimeStateParams, SqliteAcpSessionRepository,
     SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
     SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
     SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository,

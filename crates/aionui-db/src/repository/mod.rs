@@ -60,4 +60,4 @@ pub use sqlite_settings::SqliteSettingsRepository;
 pub use sqlite_team::SqliteTeamRepository;
 pub use sqlite_user::SqliteUserRepository;
 pub use team::ITeamRepository;
-pub use user::IUserRepository;
+pub use user::{IUserRepository, RoleRemoval};

@@ -1,5 +1,15 @@
 use crate::error::DbError;
-use crate::models::User;
+use crate::models::{Role, User};
+
+/// Resultado de [`IUserRepository::remove_role`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleRemoval {
+    /// El rol se quitó, o el usuario no lo tenía (no-op idempotente).
+    Removed,
+    /// Bloqueado: quitar el rol `admin` dejaría el sistema sin ningún
+    /// administrador. La fila NO se tocó. Invariante anti-lockout (Fase 2 #5).
+    WouldLeaveNoAdmins,
+}
 
 /// User data access abstraction.
 ///
@@ -66,4 +76,22 @@ pub trait IUserRepository: Send + Sync {
     /// Asigna `role_id` a `user_id` (idempotente). Ambos deben existir: hay FK a
     /// `users(id)` y `roles(id)`. RBAC eje 1 — habilita poblar `user_roles`.
     async fn assign_role(&self, user_id: &str, role_id: &str) -> Result<(), DbError>;
+
+    /// Quita `role_id` de `user_id` de forma **atómica** (idempotente: no error
+    /// si no lo tenía). RBAC eje 1 — usado por el panel admin.
+    ///
+    /// Preserva la invariante "el sistema nunca queda sin administradores": si
+    /// `role_id == "admin"` y el usuario fuese el último admin, NO se quita y se
+    /// devuelve [`RoleRemoval::WouldLeaveNoAdmins`]. El chequeo y el borrado
+    /// ocurren en una sola sentencia SQL para evitar el race TOCTOU de dos
+    /// removals concurrentes que veían `count = 2` y dejaban el sistema en 0.
+    async fn remove_role(&self, user_id: &str, role_id: &str) -> Result<RoleRemoval, DbError>;
+
+    /// Devuelve el catálogo de roles (tabla `roles`), ordenado por `id`.
+    /// Fuente de verdad para los chips/checkboxes del panel admin.
+    async fn list_roles(&self) -> Result<Vec<Role>, DbError>;
+
+    /// Cuenta cuántos usuarios tienen asignado `role_id`. Sostiene invariantes
+    /// como "el sistema nunca queda sin administradores".
+    async fn count_users_with_role(&self, role_id: &str) -> Result<i64, DbError>;
 }
