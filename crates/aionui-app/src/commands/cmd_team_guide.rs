@@ -561,6 +561,9 @@ mod tests {
 impl GuideServer {
     async fn forward_tool(&self, tool_name: &str, args: &serde_json::Value) -> CallToolResult {
         let url = format!("http://127.0.0.1:{}/tool", self.port);
+        // El bridge HTTP IGNORA `conversation_id`/`user_id` del body: los deriva
+        // del token (AION_MCP_TOKEN) ligado a la conversación (Fase 2 #5). Se
+        // mantienen aquí solo por observabilidad; cambiarlos no afecta a la authz.
         let body = serde_json::json!({
             "tool": tool_name,
             "args": args,

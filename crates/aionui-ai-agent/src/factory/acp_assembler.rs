@@ -157,7 +157,17 @@ fn team_mcp_server(cfg: &TeamMcpStdioConfig) -> McpServer {
 fn guide_mcp_server(cfg: &GuideMcpConfig, extra: &AcpBuildExtra, conversation_id: &str) -> McpServer {
     let env = vec![
         EnvVariable::new("AION_MCP_PORT".to_owned(), cfg.port.to_string()),
-        EnvVariable::new("AION_MCP_TOKEN".to_owned(), cfg.token.clone()),
+        // Token ligado a la conversación (Fase 2 #5): el bridge toma el
+        // conversation_id del token verificado, no del body, así un agente solo
+        // opera sobre su propia conversación (cierra el IDOR del Guide bridge).
+        EnvVariable::new(
+            "AION_MCP_TOKEN".to_owned(),
+            aionui_common::guide_token::scope(
+                &cfg.token,
+                conversation_id,
+                extra.user_id.as_deref().unwrap_or_default(),
+            ),
+        ),
         EnvVariable::new("AION_MCP_BACKEND".to_owned(), extra.backend.clone().unwrap_or_default()),
         EnvVariable::new("AION_MCP_CONVERSATION_ID".to_owned(), conversation_id.to_owned()),
         EnvVariable::new("AION_MCP_USER_ID".to_owned(), extra.user_id.clone().unwrap_or_default()),
@@ -272,7 +282,20 @@ mod tests {
         let servers = resolve_mcp_servers(&config, "conv-1", Vec::new());
         assert_eq!(servers.len(), 1);
         match &servers[0] {
-            McpServer::Stdio(s) => assert_eq!(s.name, "aionui-team-guide"),
+            McpServer::Stdio(s) => {
+                assert_eq!(s.name, "aionui-team-guide");
+                // AION_MCP_TOKEN va ligado a (conversation_id, user_id) (Fase 2 #5).
+                let token = s
+                    .env
+                    .iter()
+                    .find(|e| e.name == "AION_MCP_TOKEN")
+                    .map(|e| e.value.clone())
+                    .expect("AION_MCP_TOKEN present");
+                assert_eq!(
+                    aionui_common::guide_token::verify("guide-tok", &token),
+                    Some(("conv-1".to_owned(), String::new())),
+                );
+            }
             _ => panic!("expected stdio server"),
         }
     }

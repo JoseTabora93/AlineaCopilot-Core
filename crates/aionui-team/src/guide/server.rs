@@ -113,14 +113,20 @@ async fn handle_tool_request(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if provided_token != state.auth_token {
-        warn!("Guide HTTP: unauthorized request");
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "unauthorized"})),
-        )
-            .into_response();
-    }
+    // El token liga (conversation_id, user_id) (Fase 2 #5): se toman de aquí, NO
+    // del body del llamador, para que un agente comprometido no pueda operar sobre
+    // la conversación ni el usuario de otro (cierra el IDOR del Guide bridge).
+    let (conversation_id, user_id) = match aionui_common::guide_token::verify(&state.auth_token, provided_token) {
+        Some(ids) => ids,
+        None => {
+            warn!("Guide HTTP: unauthorized request");
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "unauthorized"})),
+            )
+                .into_response();
+        }
+    };
 
     let tool = body.get("tool").and_then(serde_json::Value::as_str).unwrap_or("");
     let args = body.get("args").cloned().unwrap_or(serde_json::Value::Null);
@@ -128,7 +134,7 @@ async fn handle_tool_request(
     info!(tool, "Guide HTTP: dispatching tool");
 
     let response_body = match tool {
-        "aion_create_team" => exec_create_team(&body, &args, &state.service).await,
+        "aion_create_team" => exec_create_team(&conversation_id, &user_id, &body, &args, &state.service).await,
         "aion_list_models" => {
             let result = match state.service.read().await.upgrade() {
                 Some(svc) => {
@@ -152,7 +158,7 @@ async fn handle_tool_request(
             info!("Guide HTTP: aion_list_models succeeded");
             serde_json::json!({"result": serde_json::to_string(&result).unwrap_or_default()})
         }
-        t if t.starts_with("team_") => exec_team_tool(t, &body, &args, &state.service).await,
+        t if t.starts_with("team_") => exec_team_tool(t, &conversation_id, &args, &state.service).await,
         unknown => {
             warn!(tool = unknown, "Guide HTTP: unknown tool");
             serde_json::json!({"error": format!("Unknown tool: {unknown}")})
@@ -170,6 +176,8 @@ async fn handle_tool_request(
 // ---------------------------------------------------------------------------
 
 async fn exec_create_team(
+    conversation_id: &str,
+    user_id: &str,
     request_body: &serde_json::Value,
     args: &serde_json::Value,
     service: &ServiceSlot,
@@ -206,17 +214,15 @@ async fn exec_create_team(
         .unwrap_or("")
         .to_owned();
 
-    let user_id = request_body
-        .get("user_id")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("system_default_user")
-        .to_owned();
+    // user_id y conversation_id vienen del token verificado (no del body): un
+    // agente no puede crear un team a nombre de otro usuario ni conversación.
+    let user_id = if user_id.is_empty() {
+        "system_default_user".to_owned()
+    } else {
+        user_id.to_owned()
+    };
 
-    let caller_conversation_id = request_body
-        .get("conversation_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(str::to_owned);
+    let caller_conversation_id = (!conversation_id.is_empty()).then(|| conversation_id.to_owned());
 
     // Refuse if the caller conversation already belongs to a team.
     // This prevents duplicate team creation when guide MCP is
@@ -278,7 +284,7 @@ async fn exec_create_team(
 
 async fn exec_team_tool(
     tool_name: &str,
-    request_body: &serde_json::Value,
+    conversation_id: &str,
     args: &serde_json::Value,
     service: &ServiceSlot,
 ) -> serde_json::Value {
@@ -290,19 +296,12 @@ async fn exec_team_tool(
         }
     };
 
-    let conversation_id = match request_body
-        .get("conversation_id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|s| !s.is_empty())
-    {
-        Some(id) => id.to_owned(),
-        None => {
-            warn!(tool = tool_name, "Guide HTTP: team tool missing conversation_id");
-            return serde_json::json!({"error": "missing conversation_id"});
-        }
-    };
+    if conversation_id.is_empty() {
+        warn!(tool = tool_name, "Guide HTTP: team tool missing conversation_id");
+        return serde_json::json!({"error": "missing conversation_id"});
+    }
 
-    let (team_id, slot_id) = match resolve_team_context(&svc, &conversation_id).await {
+    let (team_id, slot_id) = match resolve_team_context(&svc, conversation_id).await {
         Ok(ctx) => ctx,
         Err(e) => {
             warn!(tool = tool_name, error = %e, "Guide HTTP: resolve_team_context failed");
@@ -451,7 +450,8 @@ mod tests {
     async fn tool_call_with_valid_token_succeeds() {
         let server = GuideMcpServer::start().await.unwrap();
         let port = server.http_port();
-        let token = server.auth_token().to_owned();
+        // Token ligado a la conversación (Fase 2 #5), como lo emite el assembler.
+        let token = aionui_common::guide_token::scope(server.auth_token(), "conv-test", "user-1");
 
         let client = reqwest::Client::new();
         let resp = client
@@ -465,5 +465,24 @@ mod tests {
 
         let body: serde_json::Value = resp.json().await.unwrap();
         assert!(body.get("result").is_some());
+    }
+
+    /// El bearer global crudo (auth_token sin scope) ya NO autentica: cierra el
+    /// IDOR donde un token compartido permitía pasar cualquier conversation_id.
+    #[tokio::test]
+    async fn raw_global_token_is_rejected() {
+        let server = GuideMcpServer::start().await.unwrap();
+        let port = server.http_port();
+        let raw = server.auth_token().to_owned();
+
+        let client = reqwest::Client::new();
+        let resp = client
+            .post(format!("http://127.0.0.1:{port}/tool"))
+            .header("Authorization", format!("Bearer {raw}"))
+            .json(&serde_json::json!({"tool": "aion_list_models", "args": {}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status().as_u16(), 401, "el token global crudo debe ser rechazado");
     }
 }
