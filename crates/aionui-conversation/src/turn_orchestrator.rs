@@ -83,7 +83,9 @@ impl ConversationTurnOrchestrator {
                     "ledger: turno bloqueado por límite de consumo (hard)"
                 );
                 let send_error = AgentSendError::new(
-                    format!("Límite de consumo excedido (${spent:.2} de ${hard:.2}). Pide a un administrador que lo amplíe."),
+                    format!(
+                        "Límite de consumo excedido (${spent:.2} de ${hard:.2}). Pide a un administrador que lo amplíe."
+                    ),
                     AgentErrorCode::UserLlmProviderBillingRequired,
                     AgentErrorOwnership::Aionui,
                     None,
@@ -92,7 +94,12 @@ impl ConversationTurnOrchestrator {
                     None,
                 );
                 self.service
-                    .persist_and_broadcast_send_failure_tip(&conv_id, &turn_id, &send_error, Some("USAGE_LIMIT_EXCEEDED"))
+                    .persist_and_broadcast_send_failure_tip(
+                        &conv_id,
+                        &turn_id,
+                        &send_error,
+                        Some("USAGE_LIMIT_EXCEEDED"),
+                    )
                     .await;
                 let was_deleting = turn_claim.release_for_turn(&turn_id);
                 self.service

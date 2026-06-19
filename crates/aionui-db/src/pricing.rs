@@ -27,17 +27,81 @@ pub const DEFAULT: Rate = Rate {
 /// de más específico a más general.
 const TABLE: &[(&str, Rate)] = &[
     // Anthropic Claude
-    ("claude-opus", Rate { input: 15.0, output: 75.0, cache_read: 1.50, cache_write: 18.75 }),
-    ("claude-sonnet", Rate { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }),
-    ("claude-haiku", Rate { input: 0.80, output: 4.0, cache_read: 0.08, cache_write: 1.0 }),
-    ("claude", Rate { input: 3.0, output: 15.0, cache_read: 0.30, cache_write: 3.75 }),
+    (
+        "claude-opus",
+        Rate {
+            input: 15.0,
+            output: 75.0,
+            cache_read: 1.50,
+            cache_write: 18.75,
+        },
+    ),
+    (
+        "claude-sonnet",
+        Rate {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.30,
+            cache_write: 3.75,
+        },
+    ),
+    (
+        "claude-haiku",
+        Rate {
+            input: 0.80,
+            output: 4.0,
+            cache_read: 0.08,
+            cache_write: 1.0,
+        },
+    ),
+    (
+        "claude",
+        Rate {
+            input: 3.0,
+            output: 15.0,
+            cache_read: 0.30,
+            cache_write: 3.75,
+        },
+    ),
     // z.ai / GLM (baratos)
-    ("glm", Rate { input: 0.60, output: 2.0, cache_read: 0.11, cache_write: 0.60 }),
-    ("zai", Rate { input: 0.60, output: 2.0, cache_read: 0.11, cache_write: 0.60 }),
+    (
+        "glm",
+        Rate {
+            input: 0.60,
+            output: 2.0,
+            cache_read: 0.11,
+            cache_write: 0.60,
+        },
+    ),
+    (
+        "zai",
+        Rate {
+            input: 0.60,
+            output: 2.0,
+            cache_read: 0.11,
+            cache_write: 0.60,
+        },
+    ),
     // MiniMax
-    ("minimax", Rate { input: 0.20, output: 1.10, cache_read: 0.04, cache_write: 0.20 }),
+    (
+        "minimax",
+        Rate {
+            input: 0.20,
+            output: 1.10,
+            cache_read: 0.04,
+            cache_write: 0.20,
+        },
+    ),
     // Qwen (vía OpenRouter)
-    ("qwen", Rate { input: 0.40, output: 1.20, cache_read: 0.08, cache_write: 0.40 }),
+    (
+        "qwen",
+        Rate {
+            input: 0.40,
+            output: 1.20,
+            cache_read: 0.08,
+            cache_write: 0.40,
+        },
+    ),
 ];
 
 /// Devuelve la tarifa para `model` (substring, case-insensitive) o [`DEFAULT`].
@@ -53,7 +117,13 @@ pub fn rate_for(model: Option<&str>) -> Rate {
 }
 
 /// Costo estimado en USD para una llamada, dado el modelo y los conteos de tokens.
-pub fn estimate_cost_usd(model: Option<&str>, tokens_in: i64, tokens_out: i64, cache_read: i64, cache_write: i64) -> f64 {
+pub fn estimate_cost_usd(
+    model: Option<&str>,
+    tokens_in: i64,
+    tokens_out: i64,
+    cache_read: i64,
+    cache_write: i64,
+) -> f64 {
     let r = rate_for(model);
     let per_m = |toks: i64, price: f64| (toks.max(0) as f64) / 1_000_000.0 * price;
     per_m(tokens_in, r.input)

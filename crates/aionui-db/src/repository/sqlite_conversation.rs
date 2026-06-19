@@ -95,6 +95,10 @@ impl IConversationRepository for SqliteConversationRepository {
             set_parts.push("updated_at = ?".to_string());
             binds.push(BindValue::I64(updated_at));
         }
+        if let Some(ref project_id) = updates.project_id {
+            set_parts.push("project_id = ?".to_string());
+            binds.push(BindValue::OptStr(project_id.clone()));
+        }
 
         if set_parts.is_empty() {
             return Ok(());
@@ -798,6 +802,10 @@ fn append_filter_conditions(filters: &ConversationFilters, where_parts: &mut Vec
         where_parts.push("c.pinned = ?".to_string());
         binds.push(BindValue::Bool(pinned));
     }
+    if let Some(ref project_id) = filters.project_id {
+        where_parts.push("c.project_id = ?".to_string());
+        binds.push(BindValue::Str(project_id.clone()));
+    }
 }
 
 /// Builds a count query and bind values for the total (ignoring cursor).
@@ -839,6 +847,7 @@ mod tests {
     fn sample_conversation(user_id: &str) -> ConversationRow {
         let now = aionui_common::now_ms();
         ConversationRow {
+            project_id: None,
             id: aionui_common::generate_prefixed_id("conv"),
             user_id: user_id.to_string(),
             name: "Test Conversation".to_string(),

@@ -23,6 +23,7 @@ fn make_conversation(suffix: &str) -> ConversationRow {
         status: Some("pending".to_string()),
         source: Some("aionui".to_string()),
         channel_chat_id: None,
+        project_id: None,
         pinned: false,
         pinned_at: None,
         created_at: now,
@@ -237,6 +238,58 @@ async fn filter_by_source_and_pinned_combined() {
 
     assert_eq!(result.items.len(), 1);
     assert_eq!(result.items[0].id, c1.id);
+}
+
+// Fase 2 #2: asignar conversaciones a un proyecto y filtrarlas por proyecto.
+#[tokio::test]
+async fn assign_project_then_filter_by_project() {
+    let (repo, _db) = setup().await;
+
+    let a = make_conversation("proj-a");
+    repo.create(&a).await.unwrap();
+    let b = make_conversation("proj-b");
+    repo.create(&b).await.unwrap();
+    let none = make_conversation("sin-proyecto");
+    repo.create(&none).await.unwrap();
+
+    // Asigna a y b al proyecto vía update; `none` queda sin proyecto.
+    let assign = ConversationRowUpdate {
+        project_id: Some(Some("proj_dc".to_string())),
+        ..Default::default()
+    };
+    repo.update(&a.id, &assign).await.unwrap();
+    repo.update(&b.id, &assign).await.unwrap();
+
+    // El campo persiste.
+    assert_eq!(
+        repo.get(&a.id).await.unwrap().unwrap().project_id.as_deref(),
+        Some("proj_dc")
+    );
+
+    // Filtra por proyecto → solo a y b (no `none`).
+    let by_proj = ConversationFilters {
+        project_id: Some("proj_dc".to_string()),
+        limit: 20,
+        ..Default::default()
+    };
+    let res = repo.list_paginated(USER_ID, &by_proj).await.unwrap();
+    assert_eq!(res.items.len(), 2, "solo las del proyecto");
+    let ids: Vec<&str> = res.items.iter().map(|c| c.id.as_str()).collect();
+    assert!(ids.contains(&a.id.as_str()) && ids.contains(&b.id.as_str()));
+
+    // Quitar el proyecto (Some(None)) saca la conversación del filtro.
+    repo.update(
+        &a.id,
+        &ConversationRowUpdate {
+            project_id: Some(None),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let res2 = repo.list_paginated(USER_ID, &by_proj).await.unwrap();
+    assert_eq!(res2.items.len(), 1);
+    assert_eq!(res2.items[0].id, b.id);
 }
 
 #[tokio::test]

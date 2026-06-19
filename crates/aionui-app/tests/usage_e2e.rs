@@ -20,7 +20,11 @@ async fn my_usage_starts_empty() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "ana", PW).await;
 
-    let resp = app.clone().oneshot(get_with_token("/api/usage/me", &token)).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/usage/me", &token))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert_eq!(json["data"]["usage"]["events"], 0);
@@ -47,7 +51,11 @@ async fn my_usage_reflects_recorded_events() {
         .await
         .unwrap();
 
-    let resp = app.clone().oneshot(get_with_token("/api/usage/me", &token)).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/usage/me", &token))
+        .await
+        .unwrap();
     let json = body_json(resp).await;
     assert_eq!(json["data"]["usage"]["events"], 1);
     // 1M in @$3 + 1M out @$15 = $18 (tabla de precios sonnet).
@@ -78,11 +86,19 @@ async fn admin_sets_limit_and_user_sees_it() {
     assert_eq!(body_json(resp).await["data"]["hard_usd"], 20.0);
 
     // /me refleja el límite
-    let resp = app.clone().oneshot(get_with_token("/api/usage/me", &token)).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/usage/me", &token))
+        .await
+        .unwrap();
     assert_eq!(body_json(resp).await["data"]["limit"]["hard_usd"], 20.0);
 
     // panel admin lista consumo (200)
-    let resp = app.clone().oneshot(get_with_token("/api/admin/usage", &token)).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/admin/usage", &token))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     // lectura dedicada del límite (sirve para CUALQUIER usuario, tenga gasto o no):
@@ -93,7 +109,11 @@ async fn admin_sets_limit_and_user_sees_it() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["data"]["hard_usd"], 20.0, "lectura del límite activo");
+    assert_eq!(
+        body_json(resp).await["data"]["hard_usd"],
+        20.0,
+        "lectura del límite activo"
+    );
 }
 
 #[tokio::test]
@@ -101,6 +121,10 @@ async fn non_admin_cannot_access_admin_usage() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "worker", PW).await;
 
-    let resp = app.clone().oneshot(get_with_token("/api/admin/usage", &token)).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/admin/usage", &token))
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN, "no-admin → 403");
 }

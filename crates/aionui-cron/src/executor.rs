@@ -2517,6 +2517,7 @@ mod tests {
     impl IConversationRepository for ExistingConversationRepo {
         async fn get(&self, id: &str) -> Result<Option<aionui_db::models::ConversationRow>, aionui_db::DbError> {
             Ok(Some(aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.to_owned(),
                 user_id: "cron".into(),
                 name: "Cron Conversation".into(),
@@ -2647,6 +2648,7 @@ mod tests {
         fn new(conversation_id: &str, extra: serde_json::Value) -> Self {
             Self {
                 row: aionui_db::models::ConversationRow {
+                    project_id: None,
                     id: conversation_id.to_owned(),
                     user_id: "cron".into(),
                     name: "Cron Conversation".into(),

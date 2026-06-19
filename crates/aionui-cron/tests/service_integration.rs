@@ -146,6 +146,7 @@ impl IConversationRepository for StubConvRepo {
 
         let row = if id == "conv_mode" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Gemini Chat".into(),
@@ -176,6 +177,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else if id == "conv_mode_hermes" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Hermes Chat".into(),
@@ -206,6 +208,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else if id == "conv_mode_default" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Gemini Default Chat".into(),
@@ -236,6 +239,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else if id == "conv_mode_codex" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Codex Chat".into(),
@@ -266,6 +270,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else if id == "conv_mode_claude" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Claude Chat".into(),
@@ -296,6 +301,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else if id == "conv_mode_aionrs" {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "Aionrs Chat".into(),
@@ -326,6 +332,7 @@ impl IConversationRepository for StubConvRepo {
             }
         } else {
             aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.into(),
                 user_id: "u1".into(),
                 name: "stub".into(),
@@ -354,6 +361,7 @@ impl IConversationRepository for StubConvRepo {
         let row = rows
             .entry(id.to_owned())
             .or_insert_with(|| aionui_db::models::ConversationRow {
+                project_id: None,
                 id: id.to_owned(),
                 user_id: "u1".into(),
                 name: "stub".into(),

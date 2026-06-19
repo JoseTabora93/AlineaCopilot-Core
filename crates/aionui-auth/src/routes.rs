@@ -20,7 +20,10 @@ use aionui_api_types::{
 };
 use aionui_common::ApiError;
 use aionui_common::constants::COOKIE_MAX_AGE_DAYS;
-use aionui_db::{DbError, ISettingsRepository, IUserRepository, RoleRemoval, models::{Role, User}};
+use aionui_db::{
+    DbError, ISettingsRepository, IUserRepository, RoleRemoval,
+    models::{Role, User},
+};
 
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
@@ -932,10 +935,7 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
         // Multi-rol (RBAC eje 1): catálogo + asignar/quitar roles.
         .route("/api/admin/roles", get(admin_list_roles_handler))
         .route("/api/admin/users/{id}/roles", post(admin_assign_role_handler))
-        .route(
-            "/api/admin/users/{id}/roles/{role}",
-            delete(admin_remove_role_handler),
-        )
+        .route("/api/admin/users/{id}/roles/{role}", delete(admin_remove_role_handler))
         // require_admin runs inside auth — layers apply outermost-last
         .route_layer(axum::middleware::from_fn(require_admin_middleware))
         .route_layer(from_fn_with_state(auth_state, auth_middleware))
@@ -1044,7 +1044,11 @@ async fn admin_update_user_handler(
                     .map_err(db_error_to_api_error)?;
             }
             _ => {
-                if state.user_repo.remove_role(&id, ADMIN_ROLE).await.map_err(db_error_to_api_error)?
+                if state
+                    .user_repo
+                    .remove_role(&id, ADMIN_ROLE)
+                    .await
+                    .map_err(db_error_to_api_error)?
                     == RoleRemoval::WouldLeaveNoAdmins
                 {
                     return Err(ApiError::Conflict(
@@ -1103,7 +1107,11 @@ async fn admin_delete_user_handler(
     // Anti-lockout: borrar a un usuario cascada sus filas de `user_roles`
     // (FK ON DELETE CASCADE). Si fuese el último admin, el sistema quedaría sin
     // administradores por esta vía. Se bloquea con 409 (multi-rol — Fase 2 #5).
-    let target_roles = state.user_repo.get_user_roles(&id).await.map_err(db_error_to_api_error)?;
+    let target_roles = state
+        .user_repo
+        .get_user_roles(&id)
+        .await
+        .map_err(db_error_to_api_error)?;
     if target_roles.iter().any(|r| r == ADMIN_ROLE) {
         let total_admins = state
             .user_repo
@@ -1117,11 +1125,7 @@ async fn admin_delete_user_handler(
         }
     }
 
-    state
-        .user_repo
-        .delete_user(&id)
-        .await
-        .map_err(db_error_to_api_error)?;
+    state.user_repo.delete_user(&id).await.map_err(db_error_to_api_error)?;
 
     Ok(Json(ApiResponse::message("User deleted successfully")))
 }
@@ -1184,7 +1188,11 @@ async fn admin_assign_role_handler(
     if !known.iter().any(|r| r.id == role) {
         return Err(ApiError::BadRequest(format!("Unknown role '{role}'")));
     }
-    state.user_repo.assign_role(&user_id, role).await.map_err(db_error_to_api_error)?;
+    state
+        .user_repo
+        .assign_role(&user_id, role)
+        .await
+        .map_err(db_error_to_api_error)?;
     let view = admin_user_view(state.user_repo.as_ref(), user).await?;
     Ok(Json(ApiResponse::ok(view)))
 }
@@ -1201,7 +1209,11 @@ async fn admin_remove_role_handler(
         .await
         .map_err(db_error_to_api_error)?
         .ok_or_else(|| ApiError::NotFound(format!("User '{user_id}' not found")))?;
-    if state.user_repo.remove_role(&user_id, &role).await.map_err(db_error_to_api_error)?
+    if state
+        .user_repo
+        .remove_role(&user_id, &role)
+        .await
+        .map_err(db_error_to_api_error)?
         == RoleRemoval::WouldLeaveNoAdmins
     {
         return Err(ApiError::Conflict(

@@ -48,6 +48,7 @@ async fn setup_repo() -> (Arc<SqliteConversationRepository>, aionui_db::Database
     let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
     let now = now_ms();
     repo.create(&ConversationRow {
+        project_id: None,
         id: "conv-1".into(),
         user_id: "system_default_user".into(),
         name: "Tool call test".into(),

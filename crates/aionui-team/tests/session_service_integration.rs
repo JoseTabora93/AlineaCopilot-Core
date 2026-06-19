@@ -241,6 +241,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         let now = aionui_common::now_ms();
         self.repo
             .create(&ConversationRow {
+                project_id: None,
                 id: id.clone(),
                 user_id: request.user_id,
                 name: request.name,
@@ -269,6 +270,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .update(
                 &request.conversation_id,
                 &ConversationRowUpdate {
+                    project_id: None,
                     name: None,
                     model: None,
                     pinned: None,
@@ -307,6 +309,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .update(
                 conversation_id,
                 &ConversationRowUpdate {
+                    project_id: None,
                     name: None,
                     model: None,
                     pinned: None,

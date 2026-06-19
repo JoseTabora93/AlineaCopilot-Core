@@ -544,6 +544,7 @@ mod tests {
 
     fn row(agent_type: &str, extra: serde_json::Value, model: Option<serde_json::Value>) -> ConversationRow {
         ConversationRow {
+            project_id: None,
             id: "conv-1".into(),
             user_id: "user-1".into(),
             name: "test".into(),

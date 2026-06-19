@@ -856,6 +856,7 @@ async fn insert_conversation_with_type(repo: &Arc<MockRepo>, user_id: &str, agen
         aionui_common::generate_short_id()
     );
     let row = ConversationRow {
+        project_id: None,
         id,
         user_id: user_id.to_owned(),
         name: format!("legacy {}", agent_type.serde_name()),
@@ -2744,6 +2745,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
             "user_1",
             &auto_conv.id,
             UpdateConversationRequest {
+                project_id: None,
                 model: Some(ProviderWithModel {
                     provider_id: "provider-2".to_owned(),
                     model: "model-z".to_owned(),
@@ -2805,6 +2807,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
             "user_1",
             &fixed_conv.id,
             UpdateConversationRequest {
+                project_id: None,
                 model: Some(ProviderWithModel {
                     provider_id: "provider-3".to_owned(),
                     model: "model-y".to_owned(),
@@ -4540,6 +4543,7 @@ async fn get_backfills_legacy_row_and_persists() {
     // Seed a legacy row directly via the repo — simulates a pre-migration
     // conversation that the service has never touched.
     let legacy_row = ConversationRow {
+        project_id: None,
         id: "legacy-1".into(),
         user_id: "user-1".into(),
         name: "legacy".into(),
@@ -4590,6 +4594,7 @@ async fn list_backfills_mixed_rows() {
 
     // Row 1: legacy (needs backfill).
     let legacy = ConversationRow {
+        project_id: None,
         id: "a".into(),
         user_id: "u".into(),
         name: "a".into(),
@@ -4610,6 +4615,7 @@ async fn list_backfills_mixed_rows() {
     };
     // Row 2: already migrated.
     let modern = ConversationRow {
+        project_id: None,
         id: "b".into(),
         user_id: "u".into(),
         name: "b".into(),

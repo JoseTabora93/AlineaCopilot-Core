@@ -34,13 +34,12 @@ pub use repository::{
     IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
     IOAuthTokenRepository, IProviderRepository, IRemoteAgentRepository, ISettingsRepository, ITeamRepository,
     IUsageRepository, IUserRepository, PersistedSessionState, RoleRemoval, SaveRuntimeStateParams,
-    SqliteAcpSessionRepository,
-    SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
-    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
-    SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository,
-    SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteTeamRepository, SqliteUsageRepository, SqliteUserRepository,
-    rebuild_legacy_assistant_mirror,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository,
+    SqliteAssistantRepository, SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteConversationRepository,
+    SqliteCronRepository, SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProviderRepository,
+    SqliteRemoteAgentRepository, SqliteSettingsRepository, SqliteTeamRepository, SqliteUsageRepository,
+    SqliteUserRepository, rebuild_legacy_assistant_mirror,
 };
 
 // Re-export sqlx pool type for downstream crates

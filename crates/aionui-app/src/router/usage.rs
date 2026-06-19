@@ -41,7 +41,8 @@ pub(super) struct WindowQuery {
 }
 
 fn window_start(q: &WindowQuery) -> TimestampMs {
-    q.since_ms.unwrap_or_else(|| (aionui_common::now_ms() - DEFAULT_WINDOW_MS).max(0))
+    q.since_ms
+        .unwrap_or_else(|| (aionui_common::now_ms() - DEFAULT_WINDOW_MS).max(0))
 }
 
 #[derive(Serialize)]
@@ -79,9 +80,17 @@ async fn my_usage_handler(
     Query(q): Query<WindowQuery>,
 ) -> Result<Json<ApiResponse<MyUsageResponse>>, ApiError> {
     let since = window_start(&q);
-    let usage = state.usage_repo.summary_for_user(&current.id, since).await.map_err(db_err)?;
+    let usage = state
+        .usage_repo
+        .summary_for_user(&current.id, since)
+        .await
+        .map_err(db_err)?;
     let limit = state.usage_repo.get_limit(&current.id).await.map_err(db_err)?;
-    Ok(Json(ApiResponse::ok(MyUsageResponse { usage, limit, since_ms: since })))
+    Ok(Json(ApiResponse::ok(MyUsageResponse {
+        usage,
+        limit,
+        since_ms: since,
+    })))
 }
 
 /// `GET /api/admin/usage` — consumo agregado de todos los usuarios (admin-only).

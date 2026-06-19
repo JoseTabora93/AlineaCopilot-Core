@@ -16,9 +16,9 @@ use aionui_conversation::{ConversationService, runtime_state::ConversationRuntim
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
     IUsageRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteUsageRepository,
-    SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
-    SqliteMcpServerRepository, SqliteProviderRepository, SqliteUserRepository,
+    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository,
+    SqliteConversationRepository, SqliteMcpServerRepository, SqliteProviderRepository, SqliteUsageRepository,
+    SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;

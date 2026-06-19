@@ -873,6 +873,8 @@ impl ConversationService {
         let row = aionui_db::models::ConversationRow {
             id: id.clone(),
             user_id: user_id.to_owned(),
+            // Las conversaciones se crean sin proyecto; se asignan después (Fase 2 #2).
+            project_id: None,
             name: req.name.unwrap_or_default(),
             r#type: enum_to_db(&req.r#type)?,
             extra: serde_json::to_string(&extra)
@@ -1454,6 +1456,7 @@ impl ConversationService {
             source: query.source,
             cron_job_id: query.cron_job_id,
             pinned: query.pinned,
+            project_id: query.project_id.clone(),
         };
 
         let result = self.conversation_repo.list_paginated(user_id, &filters).await?;
@@ -1606,6 +1609,8 @@ impl ConversationService {
             pinned_at,
             model: model_json,
             extra: merged_extra,
+            // Asignar a proyecto cuando viene en el request (Fase 2 #2).
+            project_id: req.project_id.map(Some),
             status: None,
             updated_at: Some(now),
         };

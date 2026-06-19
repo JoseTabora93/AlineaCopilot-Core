@@ -2,8 +2,8 @@ use sqlx::SqlitePool;
 
 use crate::error::DbError;
 use crate::models::{Role, User};
-use crate::repository::user::RoleRemoval;
 use crate::repository::IUserRepository;
+use crate::repository::user::RoleRemoval;
 
 /// Id del rol con privilegios de administración (seed de la migración 013).
 /// La invariante anti-lockout de `remove_role` se ancla a este valor.
@@ -78,11 +78,13 @@ impl IUserRepository for SqliteUserRepository {
         // Multi-rol (Fase 2 #5): el bootstrap pone `users.role = 'admin'`, pero el
         // gate de admin lee `user_roles`. Sin esta fila, el admin recién creado por
         // el setup quedaría bloqueado (roles=[] → no admin). Materializa el rol.
-        sqlx::query("INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES ('system_default_user', ?, ?)")
-            .bind(ADMIN_ROLE)
-            .bind(now)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES ('system_default_user', ?, ?)",
+        )
+        .bind(ADMIN_ROLE)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -296,13 +298,12 @@ impl IUserRepository for SqliteUserRepository {
         // 0 filas borradas: o el usuario no tenía admin (no-op idempotente), o era
         // el último admin (bloqueado). Lo distingue una lectura post-hoc — ya no es
         // sensible al race: el borrado atómico de arriba ya ocurrió o no.
-        let still_admin = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM user_roles WHERE user_id = ? AND role_id = ? LIMIT 1",
-        )
-        .bind(user_id)
-        .bind(role_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let still_admin =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM user_roles WHERE user_id = ? AND role_id = ? LIMIT 1")
+                .bind(user_id)
+                .bind(role_id)
+                .fetch_optional(&self.pool)
+                .await?;
         Ok(if still_admin.is_some() {
             RoleRemoval::WouldLeaveNoAdmins
         } else {
@@ -791,10 +792,16 @@ mod tests {
         repo.assign_role(&user.id, "gerencia").await.unwrap();
         assert_eq!(repo.get_user_roles(&user.id).await.unwrap(), vec!["gerencia"]);
 
-        assert_eq!(repo.remove_role(&user.id, "gerencia").await.unwrap(), RoleRemoval::Removed);
+        assert_eq!(
+            repo.remove_role(&user.id, "gerencia").await.unwrap(),
+            RoleRemoval::Removed
+        );
         assert!(repo.get_user_roles(&user.id).await.unwrap().is_empty());
         // idempotente: quitar lo que no está no es error
-        assert_eq!(repo.remove_role(&user.id, "gerencia").await.unwrap(), RoleRemoval::Removed);
+        assert_eq!(
+            repo.remove_role(&user.id, "gerencia").await.unwrap(),
+            RoleRemoval::Removed
+        );
     }
 
     #[tokio::test]
