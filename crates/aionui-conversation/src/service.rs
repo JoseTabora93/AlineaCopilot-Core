@@ -1610,6 +1610,13 @@ impl ConversationService {
             model: model_json,
             extra: merged_extra,
             // Asignar a proyecto cuando viene en el request (Fase 2 #2).
+            // ⚠️ SEGURIDAD (review Fase 2 #2): esto NO valida membresía — solo
+            // ownership de la conversación. El `project_id` asignado viaja FIRMADO
+            // al agente (token de identidad). PRECONDICIÓN DURA: antes de que
+            // cualquier consumidor lea `claims.project_id` para decidir acceso
+            // (RAG-por-proyecto / gbrain), aquí DEBE rechazarse (fail-closed)
+            // la asignación a un proyecto donde el usuario no es miembro
+            // (vía `resource_acl` o Paca). Hoy es inerte: nadie consume el claim.
             project_id: req.project_id.map(Some),
             status: None,
             updated_at: Some(now),

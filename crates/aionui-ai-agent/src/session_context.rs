@@ -25,6 +25,9 @@ pub struct ConversationContext {
     /// Roles RBAC del usuario (eje 1), resueltos al construir el contexto.
     /// Viajan al agente para emitir el token de identidad y aplicar scope.
     pub roles: Vec<String>,
+    /// Proyecto de la conversación (Fase 2 #2). Viaja al agente en el token de
+    /// identidad firmado como `project_id` para acotar el scope (RAG por proyecto).
+    pub project_id: Option<String>,
     pub agent_type: AgentType,
     pub source: Option<String>,
 }

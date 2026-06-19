@@ -36,9 +36,9 @@ const IDENTITY_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000; // 12 h
 /// desapercibido en compilación.
 ///
 /// Contrato de los claims emitidos:
-/// - `project_id = conversation_id`: transporta la conversación como **unidad
-///   mínima de aislamiento**, NO un proyecto real (el RBAC eje-3 por proyecto
-///   está pendiente; no interpretar como scope-por-proyecto).
+/// - `project_id`: el **proyecto real** de la conversación (Fase 2 #2) cuando
+///   pertenece a uno; si no, cae a `conversation_id` como unidad mínima de
+///   aislamiento. El agente lo usa para acotar el scope (RAG por proyecto).
 /// - `scopes = []`: sin scopes adicionales; el consumidor debe tratarlo como
 ///   deny-by-default, no como "sin restricción".
 ///
@@ -59,7 +59,16 @@ fn inject_identity_env(
     match ri.issue_for(
         ctx.user_id.clone(),
         ctx.roles.clone(),
-        Some(ctx.conversation_id.clone()),
+        // Proyecto real de la conversación (Fase 2 #2) o, si no tiene, la
+        // conversación como unidad mínima de aislamiento, **prefijada `conv:`**
+        // para que un consumidor de scope-por-proyecto nunca confunda un
+        // conversation_id con un project_id real (review de seguridad).
+        // ⚠️ SEGURIDAD: hoy `project_id` de la conversación se asigna SIN check de
+        // membresía (la membresía vive en Paca/`resource_acl`, aún sin cablear).
+        // ANTES de que cualquier consumidor lea `claims.project_id` para decidir
+        // acceso (RAG-por-proyecto), `ConversationService::update` DEBE rechazar
+        // asignaciones a proyectos donde el usuario no es miembro (fail-closed).
+        Some(ctx.project_id.clone().unwrap_or_else(|| format!("conv:{}", ctx.conversation_id))),
         Vec::new(),
         now_ms,
         IDENTITY_TOKEN_TTL_MS,
@@ -621,12 +630,34 @@ mod tests {
 
     fn ctx_for(user_id: &str, roles: Vec<String>, conversation_id: &str) -> FactoryContext {
         FactoryContext {
+            project_id: None,
             conversation_id: conversation_id.to_owned(),
             user_id: user_id.to_owned(),
             roles,
             workspace: "/tmp/ws".to_owned(),
             is_custom_workspace: false,
         }
+    }
+
+    // Fase 2 #2: con proyecto real, el token de identidad lleva ese project_id
+    // (no el conversation_id de fallback).
+    #[test]
+    fn identity_token_carries_real_project_id() {
+        let ri = RequestIdentityService::from_seed([9u8; 32]);
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let now = 1_000_000;
+        let ctx = FactoryContext {
+            project_id: Some("proj_dc".to_string()),
+            conversation_id: "conv-1".to_owned(),
+            user_id: "user-1".to_owned(),
+            roles: vec!["tecnica".to_string()],
+            workspace: "/tmp/ws".to_owned(),
+            is_custom_workspace: false,
+        };
+        inject_identity_env(&mut env, Some(&ri), &ctx, now);
+        let tok = env.iter().find(|e| e.name == "AION_IDENTITY_TOKEN").expect("token");
+        let claims = ri.verify(&tok.value, now + 1000).unwrap();
+        assert_eq!(claims.project_id.as_deref(), Some("proj_dc"));
     }
 
     #[test]
@@ -648,7 +679,8 @@ mod tests {
         let claims = ri.verify(&tok.value, now + 1000).unwrap();
         assert_eq!(claims.user_id, "user-1");
         assert_eq!(claims.roles, vec!["ingenieria".to_string()]);
-        assert_eq!(claims.project_id.as_deref(), Some("conv-1"));
+        // Sin proyecto → fallback prefijado para no colisionar con un project_id real.
+        assert_eq!(claims.project_id.as_deref(), Some("conv:conv-1"));
         assert_eq!(claims.scopes, Vec::<String>::new());
         assert!(!claims.jti.is_empty());
         assert!(

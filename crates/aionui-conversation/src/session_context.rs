@@ -102,6 +102,7 @@ impl<'a> SessionContextBuilder<'a> {
                 conversation_id: row.id.clone(),
                 user_id: row.user_id.clone(),
                 roles,
+                project_id: row.project_id.clone(),
                 agent_type,
                 source: row.source.clone(),
             },

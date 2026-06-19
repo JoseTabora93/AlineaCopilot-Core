@@ -362,6 +362,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .to_owned();
         let context = AgentSessionContext {
             conversation: ConversationContext {
+                project_id: None,
                 conversation_id: row.id.clone(),
                 user_id: row.user_id,
                 roles: vec![],
@@ -868,6 +869,7 @@ fn confirmations_factory(count: usize) -> AgentFactory {
 fn test_acp_build_options(conversation_id: String, workspace: String) -> BuildTaskOptions {
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
+            project_id: None,
             conversation_id,
             user_id: "user1".into(),
             roles: vec![],
