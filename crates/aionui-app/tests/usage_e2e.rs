@@ -84,6 +84,16 @@ async fn admin_sets_limit_and_user_sees_it() {
     // panel admin lista consumo (200)
     let resp = app.clone().oneshot(get_with_token("/api/admin/usage", &token)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+
+    // lectura dedicada del límite (sirve para CUALQUIER usuario, tenga gasto o no):
+    // el editor la usa para prellenar el umbral actual.
+    let resp = app
+        .clone()
+        .oneshot(get_with_token(&format!("/api/admin/users/{}/limit", boss.id), &token))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["data"]["hard_usd"], 20.0, "lectura del límite activo");
 }
 
 #[tokio::test]

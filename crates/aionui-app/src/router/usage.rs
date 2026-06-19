@@ -14,7 +14,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::middleware::from_fn;
-use axum::routing::{get, put};
+use axum::routing::get;
 use axum::{Extension, Router};
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,16 @@ struct MyUsageResponse {
     since_ms: TimestampMs,
 }
 
+/// Fila del panel admin: consumo del usuario + su límite activo (para que el
+/// admin vea el umbral antes de editar). `usage` se aplana, así que la respuesta
+/// es retro-compatible con quien solo leía los campos de `UsageSummary`.
+#[derive(Serialize)]
+struct AdminUsageRow {
+    #[serde(flatten)]
+    usage: UsageSummary,
+    limit: Option<UserUsageLimit>,
+}
+
 #[derive(Debug, Deserialize)]
 pub(super) struct SetLimitRequest {
     /// USD; `null` quita ese umbral.
@@ -78,10 +88,28 @@ async fn my_usage_handler(
 async fn admin_usage_handler(
     State(state): State<UsageRouterState>,
     Query(q): Query<WindowQuery>,
-) -> Result<Json<ApiResponse<Vec<UsageSummary>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<AdminUsageRow>>>, ApiError> {
     let since = window_start(&q);
     let rows = state.usage_repo.summary_all_users(since).await.map_err(db_err)?;
-    Ok(Json(ApiResponse::ok(rows)))
+    // N+1 aceptable: el panel admin tiene pocos usuarios. Adjunta el límite activo
+    // de cada uno para que la UI muestre el umbral y prellene el editor.
+    let mut out = Vec::with_capacity(rows.len());
+    for usage in rows {
+        let limit = state.usage_repo.get_limit(&usage.user_id).await.map_err(db_err)?;
+        out.push(AdminUsageRow { usage, limit });
+    }
+    Ok(Json(ApiResponse::ok(out)))
+}
+
+/// `GET /api/admin/users/{id}/limit` — límite activo de un usuario (admin-only).
+/// `data: null` si no tiene. A diferencia de `/api/admin/usage` (que solo lista
+/// usuarios con gasto), sirve para CUALQUIER usuario → el editor prellena el umbral.
+async fn get_limit_handler(
+    State(state): State<UsageRouterState>,
+    Path(user_id): Path<String>,
+) -> Result<Json<ApiResponse<Option<UserUsageLimit>>>, ApiError> {
+    let limit = state.usage_repo.get_limit(&user_id).await.map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(limit)))
 }
 
 /// `PUT /api/admin/users/{id}/limit` — fija el límite $ de un usuario (admin-only).
@@ -119,7 +147,10 @@ pub fn usage_routes(state: UsageRouterState) -> Router {
 
     let admin = Router::new()
         .route("/api/admin/usage", get(admin_usage_handler))
-        .route("/api/admin/users/{id}/limit", put(set_limit_handler))
+        .route(
+            "/api/admin/users/{id}/limit",
+            get(get_limit_handler).put(set_limit_handler),
+        )
         .with_state(state)
         .route_layer(from_fn(require_admin_middleware));
 
