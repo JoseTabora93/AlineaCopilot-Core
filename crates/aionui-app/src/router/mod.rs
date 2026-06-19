@@ -6,6 +6,7 @@ mod routes;
 mod state;
 mod team_conversation_adapters;
 mod trace;
+mod usage;
 
 pub use routes::{create_router, create_router_with_all_state, create_router_with_states};
 pub use state::{

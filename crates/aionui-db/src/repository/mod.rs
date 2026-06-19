@@ -23,8 +23,10 @@ mod sqlite_provider;
 mod sqlite_remote_agent;
 mod sqlite_settings;
 mod sqlite_team;
+mod sqlite_usage;
 mod sqlite_user;
 pub mod team;
+pub mod usage;
 mod user;
 
 pub use acp_session::{CreateAcpSessionParams, IAcpSessionRepository, PersistedSessionState, SaveRuntimeStateParams};
@@ -59,5 +61,7 @@ pub use sqlite_remote_agent::SqliteRemoteAgentRepository;
 pub use sqlite_settings::SqliteSettingsRepository;
 pub use sqlite_team::SqliteTeamRepository;
 pub use sqlite_user::SqliteUserRepository;
+pub use sqlite_usage::SqliteUsageRepository;
 pub use team::ITeamRepository;
+pub use usage::IUsageRepository;
 pub use user::{IUserRepository, RoleRemoval};
