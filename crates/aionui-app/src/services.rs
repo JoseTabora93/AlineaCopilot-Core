@@ -15,7 +15,8 @@ use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    IUsageRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    SqliteAssistantDefinitionRepository, SqliteUsageRepository,
     SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
     SqliteMcpServerRepository, SqliteProviderRepository, SqliteUserRepository,
 };
@@ -28,6 +29,8 @@ pub struct AppServices {
     pub database: Database,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
+    /// Ledger de consumos $ (Fase 2 #3).
+    pub usage_repo: Arc<dyn IUsageRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -81,6 +84,7 @@ impl AppServices {
             conversation_runtime_state: self.conversation_runtime_state.clone(),
             conversation_repo: self.conversation_repo.clone(),
             user_repo: self.user_repo.clone(),
+            usage_repo: self.usage_repo.clone(),
             multiuser: self.enforce_file_scope,
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
         });
@@ -103,6 +107,7 @@ impl AppServices {
         let enforce_file_scope = config.enforce_file_scope();
         let app_version = config.app_version.clone();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(database.pool().clone()));
+        let usage_repo: Arc<dyn IUsageRepository> = Arc::new(SqliteUsageRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -234,6 +239,7 @@ impl AppServices {
             conversation_runtime_state: conversation_runtime_state.clone(),
             conversation_repo: conversation_repo.clone(),
             user_repo: user_repo.clone(),
+            usage_repo: usage_repo.clone(),
             multiuser: enforce_file_scope,
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
         });
@@ -242,6 +248,7 @@ impl AppServices {
             database,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             user_repo,
+            usage_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -276,6 +283,7 @@ struct ConversationServiceDeps<'a> {
     conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     conversation_repo: Arc<dyn IConversationRepository>,
     user_repo: Arc<dyn IUserRepository>,
+    usage_repo: Arc<dyn IUsageRepository>,
     multiuser: bool,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
 }
@@ -296,6 +304,7 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     .with_runtime_state(deps.conversation_runtime_state)
     .with_multiuser(deps.multiuser);
     service.with_user_repo(deps.user_repo);
+    service.with_usage_repo(deps.usage_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),

@@ -14,6 +14,7 @@ mod remote_agent;
 mod role;
 mod system_settings;
 mod team;
+mod usage;
 mod user;
 
 pub use acp_session::AcpSessionRow;
@@ -36,4 +37,5 @@ pub use remote_agent::RemoteAgentRow;
 pub use role::Role;
 pub use system_settings::SystemSettings;
 pub use team::{MailboxMessageRow, TeamRow, TeamTaskRow};
+pub use usage::{NewUsageEvent, UsageEvent, UsageSummary, UserUsageLimit};
 pub use user::User;

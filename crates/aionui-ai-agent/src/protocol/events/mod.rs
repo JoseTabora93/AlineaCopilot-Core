@@ -101,6 +101,16 @@ pub enum TipType {
 pub struct FinishEventData {
     #[serde(default)]
     pub session_id: Option<String>,
+    /// Tokens de facturación del turno (Copilot/aionrs), para el ledger de
+    /// consumos (Fase 2 #3). 0 cuando el motor no los reporta.
+    #[serde(default)]
+    pub tokens_in: u64,
+    #[serde(default)]
+    pub tokens_out: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
 }
 
 #[cfg(test)]
@@ -224,6 +234,7 @@ mod tests {
     fn finish_event_roundtrip() {
         let event = AgentStreamEvent::Finish(FinishEventData {
             session_id: Some("sess-abc".into()),
+            ..Default::default()
         });
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "finish");

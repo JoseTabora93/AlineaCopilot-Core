@@ -600,6 +600,7 @@ mod tests {
             .runtime
             .emit(AgentStreamEvent::Finish(crate::protocol::events::FinishEventData {
                 session_id: None,
+                ..Default::default()
             }));
 
         match rx.try_recv().unwrap() {

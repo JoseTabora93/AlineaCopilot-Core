@@ -122,7 +122,10 @@ impl AgentRuntime {
         }
         let _ = self
             .event_tx
-            .send(AgentStreamEvent::Finish(FinishEventData { session_id }));
+            .send(AgentStreamEvent::Finish(FinishEventData {
+                session_id,
+                ..Default::default()
+            }));
     }
 
     /// Atomic: set status ← Finished AND broadcast `Error { message }`.
