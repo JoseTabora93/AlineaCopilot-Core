@@ -146,6 +146,7 @@ impl ConversationTurnOrchestrator {
                 self.service.broadcaster().clone(),
                 self.service.current_cron_service(),
             )
+            .with_usage_repo(self.service.usage_repo())
             .with_runtime_state(Arc::clone(&runtime_state))
             .with_persistence(persistence.clone())
             .with_turn_completion(false);

@@ -13,7 +13,7 @@ use crate::service::ConversationService;
 use crate::stream_persistence::{
     PersistedTextSegment, StreamPersistenceAdapter, TextSegmentState, ThinkingSegmentState,
 };
-use aionui_db::IConversationRepository;
+use aionui_db::{IConversationRepository, IUsageRepository, models::NewUsageEvent};
 use aionui_realtime::EventBroadcaster;
 use serde_json::json;
 use tokio::sync::{broadcast, oneshot};
@@ -75,6 +75,9 @@ pub struct StreamRelay {
     persistence: Option<RuntimePersistenceCoordinator>,
     adapter: StreamPersistenceAdapter,
     complete_turn: bool,
+    /// Ledger de consumos (Fase 2 #3). `None` = sin medición (tests / motores
+    /// que no reportan tokens). Solo se registra en `Finish` con tokens > 0.
+    usage_repo: Option<Arc<dyn IUsageRepository>>,
 }
 
 impl StreamRelay {
@@ -99,7 +102,15 @@ impl StreamRelay {
             persistence: None,
             adapter,
             complete_turn: true,
+            usage_repo: None,
         }
+    }
+
+    /// Inyecta el ledger de consumos (Fase 2 #3). Cuando está presente, cada
+    /// turno con tokens reportados (Copilot/aionrs vía `Finish`) se registra.
+    pub fn with_usage_repo(mut self, usage_repo: Option<Arc<dyn IUsageRepository>>) -> Self {
+        self.usage_repo = usage_repo;
+        self
     }
 
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
@@ -268,6 +279,29 @@ impl StreamRelay {
                             }
                         }
                         AgentStreamEvent::Finish(_) | AgentStreamEvent::Error(_) => {
+                            // Ledger (Fase 2 #3): registra el consumo del turno si el motor
+                            // reportó tokens (Copilot/aionrs los pone en el evento Finish).
+                            if let (Some(repo), AgentStreamEvent::Finish(fin)) = (&self.usage_repo, &event)
+                                && (fin.tokens_in | fin.tokens_out | fin.cache_read | fin.cache_write) != 0
+                            {
+                                let ev = NewUsageEvent {
+                                    user_id: self.user_id.clone(),
+                                    conversation_id: Some(self.conversation_id.clone()),
+                                    project_id: None,
+                                    engine: "copilot".into(),
+                                    provider: None,
+                                    // El modelo de aionrs no viaja en el stream; el precio usa
+                                    // la tarifa por defecto hasta cablear el modelo de la conv.
+                                    model: None,
+                                    tokens_in: fin.tokens_in as i64,
+                                    tokens_out: fin.tokens_out as i64,
+                                    cache_read: fin.cache_read as i64,
+                                    cache_write: fin.cache_write as i64,
+                                };
+                                if let Err(e) = repo.record_event(ev).await {
+                                    warn!(error = %e, "ledger: failed to record usage event");
+                                }
+                            }
                             let elapsed_ms = now_ms() - started_at;
                             let event_type = if matches!(event, AgentStreamEvent::Finish(_)) {
                                 "Finish"
@@ -658,6 +692,81 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     // ── run() async tests ─────────────────────────────────────────
+
+    // Ledger (Fase 2 #3): un Finish con tokens registra un usage_event.
+    #[tokio::test]
+    async fn finish_with_tokens_records_usage_event() {
+        use aionui_db::{IUserRepository, SqliteUsageRepository, SqliteUserRepository, init_database_memory};
+
+        let db = init_database_memory().await.unwrap();
+        let users = SqliteUserRepository::new(db.pool().clone());
+        let user = users.create_user("ledger-user", "h").await.unwrap();
+        let usage: Arc<dyn IUsageRepository> = Arc::new(SqliteUsageRepository::new(db.pool().clone()));
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            user.id.clone(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        )
+        .with_usage_repo(Some(usage.clone()));
+
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            tokens_in: 1_000_000,
+            tokens_out: 1_000_000,
+            cache_read: 0,
+            cache_write: 0,
+        }))
+        .unwrap();
+        let _ = relay.consume(rx).await;
+
+        let s = usage.summary_for_user(&user.id, 0).await.unwrap();
+        assert_eq!(s.events, 1, "debe registrar 1 usage_event");
+        assert_eq!(s.tokens_in, 1_000_000);
+        // model None → tarifa default ($3 in / $15 out) → 1M+1M = $18.
+        assert!((s.cost_usd - 18.0).abs() < 1e-6, "cost {}", s.cost_usd);
+    }
+
+    // Un Finish SIN tokens (motor que no reporta) no registra nada.
+    #[tokio::test]
+    async fn finish_without_tokens_records_nothing() {
+        use aionui_db::{IUserRepository, SqliteUsageRepository, SqliteUserRepository, init_database_memory};
+
+        let db = init_database_memory().await.unwrap();
+        let users = SqliteUserRepository::new(db.pool().clone());
+        let user = users.create_user("ledger-user", "h").await.unwrap();
+        let usage: Arc<dyn IUsageRepository> = Arc::new(SqliteUsageRepository::new(db.pool().clone()));
+
+        let repo = Arc::new(RecordingRepo::new());
+        let bus = Arc::new(aionui_realtime::BroadcastEventBus::new(64));
+        let (tx, _) = broadcast::channel(64);
+
+        let relay = StreamRelay::new(
+            "conv-1".into(),
+            "asst-1".into(),
+            "turn-1".into(),
+            user.id.clone(),
+            repo.clone(),
+            bus.clone(),
+            None,
+        )
+        .with_usage_repo(Some(usage.clone()));
+
+        let rx = tx.subscribe();
+        tx.send(AgentStreamEvent::Finish(FinishEventData::default())).unwrap();
+        let _ = relay.consume(rx).await;
+
+        assert_eq!(usage.summary_for_user(&user.id, 0).await.unwrap().events, 0);
+    }
 
     #[tokio::test]
     async fn run_text_then_finish_persists_message() {

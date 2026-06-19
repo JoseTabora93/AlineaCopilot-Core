@@ -28,7 +28,7 @@ use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, IUserRepository,
+    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, IUsageRepository, IUserRepository,
     SaveRuntimeStateParams, SortOrder, UpsertConversationAssistantSnapshotParams,
 };
 use aionui_extension::AssistantRuleDispatcher;
@@ -251,6 +251,8 @@ pub struct ConversationService {
     /// Resuelve los roles RBAC al construir el contexto de sesión (Fase 2 #5).
     /// Slot opcional al estilo `mcp_server_repo`: `None` en tests que no lo wirean.
     user_repo: Arc<RwLock<Option<Arc<dyn IUserRepository>>>>,
+    /// Ledger de consumos (Fase 2 #3). Slot opcional; `None` en tests.
+    usage_repo: Arc<RwLock<Option<Arc<dyn IUsageRepository>>>>,
     /// Modo multiusuario (`!local`): namespacea los workspaces auto bajo
     /// `users/{user_id}/` para la segregación de ficheros (Fase 2 #5).
     multiuser: bool,
@@ -321,6 +323,7 @@ impl ConversationService {
             assistant_preference_repo: Arc::new(RwLock::new(None)),
             assistant_dispatcher: Arc::new(RwLock::new(None)),
             user_repo: Arc::new(RwLock::new(None)),
+            usage_repo: Arc::new(RwLock::new(None)),
             multiuser: false,
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
@@ -364,6 +367,18 @@ impl ConversationService {
     /// Snapshot del repo de usuarios (clona el `Arc`, sin retener el guard).
     fn user_repo_snapshot(&self) -> Option<Arc<dyn IUserRepository>> {
         self.user_repo.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Wire el ledger de consumos (Fase 2 #3).
+    pub fn with_usage_repo(&self, repo: Arc<dyn IUsageRepository>) {
+        if let Ok(mut guard) = self.usage_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del ledger de consumos (para inyectarlo en `StreamRelay`).
+    pub fn usage_repo(&self) -> Option<Arc<dyn IUsageRepository>> {
+        self.usage_repo.read().ok().and_then(|g| g.clone())
     }
 
     pub fn with_assistant_definition_repo(&self, repo: Arc<dyn IAssistantDefinitionRepository>) {

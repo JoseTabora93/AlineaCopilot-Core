@@ -84,6 +84,7 @@ impl AppServices {
             conversation_runtime_state: self.conversation_runtime_state.clone(),
             conversation_repo: self.conversation_repo.clone(),
             user_repo: self.user_repo.clone(),
+            usage_repo: self.usage_repo.clone(),
             multiuser: self.enforce_file_scope,
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
         });
@@ -238,6 +239,7 @@ impl AppServices {
             conversation_runtime_state: conversation_runtime_state.clone(),
             conversation_repo: conversation_repo.clone(),
             user_repo: user_repo.clone(),
+            usage_repo: usage_repo.clone(),
             multiuser: enforce_file_scope,
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
         });
@@ -281,6 +283,7 @@ struct ConversationServiceDeps<'a> {
     conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     conversation_repo: Arc<dyn IConversationRepository>,
     user_repo: Arc<dyn IUserRepository>,
+    usage_repo: Arc<dyn IUsageRepository>,
     multiuser: bool,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
 }
@@ -301,6 +304,7 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     .with_runtime_state(deps.conversation_runtime_state)
     .with_multiuser(deps.multiuser);
     service.with_user_repo(deps.user_repo);
+    service.with_usage_repo(deps.usage_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),

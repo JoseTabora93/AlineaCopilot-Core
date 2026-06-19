@@ -120,14 +120,20 @@ impl OutputSink for BackendOutputSink {
         &self,
         _msg_id: &str,
         _turns: usize,
-        _input_tokens: u64,
-        _output_tokens: u64,
-        _cache_creation_tokens: u64,
-        _cache_read_tokens: u64,
+        input_tokens: u64,
+        output_tokens: u64,
+        cache_creation_tokens: u64,
+        cache_read_tokens: u64,
     ) {
-        let _ = self
-            .event_tx
-            .send(AgentStreamEvent::Finish(FinishEventData { session_id: None }));
+        // Tokens de facturación del turno → viajan en el evento Finish para que
+        // `StreamRelay` (que tiene el user_id) los registre en el ledger (Fase 2 #3).
+        let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            tokens_in: input_tokens,
+            tokens_out: output_tokens,
+            cache_read: cache_read_tokens,
+            cache_write: cache_creation_tokens,
+        }));
     }
 
     fn emit_error(&self, msg: &str) {
