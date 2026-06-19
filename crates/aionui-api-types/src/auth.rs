@@ -3,10 +3,54 @@ use serde::{Deserialize, Serialize};
 /// Public user info returned in API responses.
 ///
 /// Contains only the fields safe to expose to clients.
+/// Never includes password_hash or jwt_secret.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PublicUser {
     pub id: String,
     pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub display_name: Option<String>,
+}
+
+/// Admin-only request body for `POST /api/admin/users`.
+///
+/// The admin creates all user accounts (invite-only by default).
+#[derive(Debug, Deserialize)]
+pub struct AdminCreateUserRequest {
+    pub username: String,
+    pub password: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
+    /// Defaults to `"member"` when absent.
+    pub role: Option<String>,
+}
+
+/// Admin-only request body for `PATCH /api/admin/users/:id`.
+///
+/// All fields are optional — only fields present in the JSON payload are updated.
+#[derive(Debug, Deserialize)]
+pub struct AdminUpdateUserRequest {
+    pub is_active: Option<bool>,
+    pub role: Option<String>,
+    pub display_name: Option<String>,
+}
+
+/// Admin-only request body for `POST /api/admin/users/:id/reset-password`.
+#[derive(Debug, Deserialize)]
+pub struct AdminResetPasswordRequest {
+    pub new_password: String,
+}
+
+/// Self-registration request body for `POST /api/auth/register`.
+///
+/// Whether this endpoint succeeds depends on the `registration_mode` system setting.
+#[derive(Debug, Deserialize)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
 }
 
 /// Login request body for `POST /login`.
@@ -141,6 +185,9 @@ mod tests {
         let user = PublicUser {
             id: "auth_1712345678_abc".into(),
             username: "admin".into(),
+            role: "admin".into(),
+            is_active: true,
+            display_name: None,
         };
         let json = serde_json::to_value(&user).unwrap();
         assert_eq!(json["id"], "auth_1712345678_abc");
@@ -167,6 +214,9 @@ mod tests {
         let user = PublicUser {
             id: "user_1".into(),
             username: "admin".into(),
+            role: "admin".into(),
+            is_active: true,
+            display_name: None,
         };
         let resp = LoginResponse::new(user.clone(), "jwt_token".into());
         assert!(resp.success);
@@ -181,6 +231,9 @@ mod tests {
             PublicUser {
                 id: "auth_123".into(),
                 username: "admin".into(),
+                role: "admin".into(),
+                is_active: true,
+                display_name: None,
             },
             "eyJhbGciOi".into(),
         );

@@ -38,6 +38,27 @@ async fn create_user(services: &AppServices, username: &str) -> String {
 }
 
 #[tokio::test]
+async fn system_admin_from_bootstrap_can_access_admin_routes() {
+    // `setup_and_login` con "admin" usa el bootstrap (`set_system_user_credentials`),
+    // que ahora materializa el rol admin en `user_roles`. Sin asignar rol a mano,
+    // el admin del sistema debe poder entrar a /api/admin/* (no 403). Cierra el
+    // bug de lockout del bootstrap detectado en la validación HTTP de la fusión.
+    let (mut app, services) = build_app().await;
+    let (token, _csrf) = setup_and_login(&mut app, &services, "admin", PW).await;
+
+    let resp = app
+        .clone()
+        .oneshot(get_with_token("/api/admin/users", &token))
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "el admin del bootstrap debe tener acceso multi-rol sin asignación manual"
+    );
+}
+
+#[tokio::test]
 async fn non_admin_user_gets_403_on_admin_routes() {
     let (mut app, services) = build_app().await;
     let (token, _csrf) = setup_and_login(&mut app, &services, "worker", PW).await;

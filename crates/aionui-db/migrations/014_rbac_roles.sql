@@ -36,6 +36,16 @@ CREATE TABLE IF NOT EXISTS user_roles (
 );
 CREATE INDEX IF NOT EXISTS idx_user_roles_user ON user_roles(user_id);
 
+-- Backfill multi-rol desde la columna legada `users.role` (de 013_multiuser):
+-- los admins existentes obtienen su fila en `user_roles` para no perder acceso
+-- al migrar a multi-rol. Solo se copian valores que existen en el catálogo
+-- `roles` (es decir, 'admin'); 'member' = "sin rol de negocio" y no se copia.
+-- `users.role` queda vestigial; la fuente de verdad pasa a ser `user_roles`.
+INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at)
+SELECT u.id, u.role, 0
+FROM users u
+WHERE u.role IN (SELECT id FROM roles);
+
 ------------------------------------------------------------------------
 -- Eje 1 (clasificación): etiqueta de doc/skill -> roles que pueden acceder
 ------------------------------------------------------------------------

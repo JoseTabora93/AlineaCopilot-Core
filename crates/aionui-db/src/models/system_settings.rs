@@ -14,4 +14,19 @@ pub struct SystemSettings {
     pub command_queue_enabled: bool,
     pub save_upload_to_workspace: bool,
     pub updated_at: TimestampMs,
+    /// User registration policy.
+    ///
+    /// - `"invite_only"` (default) — admin creates all accounts; public register is closed.
+    /// - `"domain_allowlist"` — self-registration allowed when email ends with `registration_domain`.
+    /// - `"open"` — anyone may register without restrictions.
+    pub registration_mode: Option<String>,
+    /// Email domain required for `domain_allowlist` mode (e.g. `"ingelmec.ai"`).
+    pub registration_domain: Option<String>,
+}
+
+impl SystemSettings {
+    /// Returns the effective registration mode, defaulting to `"invite_only"` when unset.
+    pub fn effective_registration_mode(&self) -> &str {
+        self.registration_mode.as_deref().unwrap_or("invite_only")
+    }
 }

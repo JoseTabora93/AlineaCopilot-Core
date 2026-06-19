@@ -18,14 +18,15 @@ use aionui_api_types::ErrorResponse;
 use aionui_assets::{AssetRouterState, asset_routes};
 use aionui_assistant::assistant_routes;
 use aionui_auth::{
-    AdminRouterState, AuthRouterState, AuthState, CurrentUser, admin_routes, auth_middleware, auth_routes,
-    csrf_middleware, security_headers_middleware,
+    AuthRouterState, AuthState, CurrentUser, admin_routes, auth_middleware, auth_routes, csrf_middleware,
+    security_headers_middleware,
 };
 use aionui_channel::channel_routes;
 #[cfg(feature = "weixin")]
 use aionui_channel::weixin_login_route;
 use aionui_conversation::{conversation_ops_routes, conversation_routes};
 use aionui_cron::cron_routes;
+use aionui_db::SqliteSettingsRepository;
 use aionui_extension::{extension_routes, hub_routes, skill_routes};
 use aionui_file::{UserFileScope, file_routes};
 use aionui_mcp::mcp_routes;
@@ -135,6 +136,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let auth_state = AuthRouterState {
         jwt_service: services.jwt_service.clone(),
         user_repo: services.user_repo.clone(),
+        settings_repo: Arc::new(SqliteSettingsRepository::new(services.database.pool().clone())),
         cookie_config: services.cookie_config.clone(),
         qr_token_store: services.qr_token_store.clone(),
         local: services.local,
@@ -212,15 +214,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let cron_authenticated =
         cron_routes(states.cron).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // Admin RBAC routes (gestión de roles — Fase 2 #5). `admin_routes` ya trae su
-    // gate `require_admin` interno; aquí se añade `auth_middleware` como capa
-    // externa para que `CurrentUser` esté poblado cuando corra ese gate.
-    let admin_authenticated = admin_routes(AdminRouterState {
-        user_repo: services.user_repo.clone(),
-        local: services.local,
-    })
-    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
-
     // Office routes protected by auth middleware
     let office_authenticated =
         office_routes(states.office.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -258,7 +251,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
 
     let router = Router::new()
         .route("/health", get(health_check))
-        .merge(auth_routes(auth_state))
+        .merge(auth_routes(auth_state.clone()))
+        .merge(admin_routes(auth_state))
         .merge(system_authenticated)
         .merge(conversation_authenticated)
         .merge(conversation_ops_authenticated)
@@ -273,7 +267,6 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(channel_authenticated)
         .merge(team_authenticated)
         .merge(cron_authenticated)
-        .merge(admin_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)

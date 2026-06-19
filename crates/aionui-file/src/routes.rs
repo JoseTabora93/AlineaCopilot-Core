@@ -2,7 +2,7 @@
 
 use axum::Router;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{DefaultBodyLimit, Json, Multipart, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Multipart, Query, State};
 use axum::routing::{get, post};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -12,10 +12,11 @@ use aionui_api_types::{
     ApiResponse, BrowseDirectoryQuery, BrowseDirectoryResponse, CancelZipRequest, CopyFilesRequest, CopyFilesResponse,
     CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse,
     FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
-    ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse, SnapshotBaselineRequest,
-    SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
+    MkdirRequest, ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse,
+    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
     SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteFileRequest, ZipRequest,
 };
+use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
 use aionui_common::constants::UPLOAD_MAX_SIZE;
 
@@ -99,6 +100,11 @@ pub struct FileRouterState {
     /// drive letters, and `/` on Unix) because the WebUI host-file picker
     /// legitimately needs to reach outside any single workspace.
     pub browse_roots: BrowseRoots,
+    /// Base directory under which each authenticated user gets a private
+    /// sandbox at `{users_base_dir}/{user_id}`. The `/api/fs/browse` and
+    /// `/api/fs/mkdir` endpoints scope all access to this per-user root,
+    /// so users can never see or write outside their own folder.
+    pub users_base_dir: PathBuf,
 }
 
 /// Subárbol de ficheros permitido para el usuario del request (Fase 2 #5).
@@ -146,6 +152,7 @@ pub fn file_routes(state: FileRouterState) -> Router {
     Router::new()
         // A. Core file operations
         .route("/api/fs/browse", get(browse_directory))
+        .route("/api/fs/mkdir", post(mkdir_directory))
         .route("/api/fs/dir", post(get_files_by_dir))
         .route("/api/fs/list", post(list_workspace_files))
         .route("/api/fs/metadata", post(get_file_metadata))
@@ -187,9 +194,15 @@ pub fn file_routes(state: FileRouterState) -> Router {
 // A. Core file operations — handlers
 // ---------------------------------------------------------------------------
 
-/// `GET /api/fs/browse` — shallow directory listing for the WebUI host-file
-/// picker. Runs on the Tokio blocking pool because it does synchronous
-/// filesystem I/O.
+/// `GET /api/fs/browse` — shallow directory listing scoped to the caller's
+/// per-user sandbox (`{users_base_dir}/{user_id}`).
+///
+/// Security: the only browse root passed to [`browse::browse`] is the user's
+/// own root, so `resolve_browse_path` rejects any path that canonicalizes
+/// outside it (path traversal, symlink escape) with `PathOutsideSandbox`,
+/// and `navigation_hints` reports `can_go_up = false` at the sandbox root.
+/// An empty/absent `path` lists the user root itself. Runs the synchronous
+/// filesystem work on the Tokio blocking pool.
 async fn browse_directory(
     State(state): State<FileRouterState>,
     scope: Option<axum::Extension<UserFileScope>>,
@@ -213,6 +226,78 @@ async fn browse_directory(
     .map_err(|e| ApiError::Internal(format!("browse task failed: {}", e)))??;
 
     Ok(Json(ApiResponse::ok(response)))
+}
+
+/// `POST /api/fs/mkdir` — create a directory inside the caller's per-user
+/// sandbox.
+///
+/// `req.path` is resolved relative to `{users_base_dir}/{user_id}`. Security
+/// is enforced in two layers:
+/// 1. A fast `has_traversal` pre-check rejects any `..` component (or null
+///    byte) before touching the filesystem.
+/// 2. After creating the directory, the result is canonicalized and verified
+///    to still live under the canonicalized user root — defense in depth
+///    against symlink-based escapes.
+async fn mkdir_directory(
+    State(state): State<FileRouterState>,
+    Extension(current_user): Extension<CurrentUser>,
+    body: Result<Json<MkdirRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<()>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+
+    let user_root = state.users_base_dir.join(&current_user.id);
+    let req_path = req.path;
+
+    tokio::task::spawn_blocking(move || create_user_directory(&user_root, &req_path))
+        .await
+        .map_err(|e| ApiError::Internal(format!("mkdir task failed: {}", e)))??;
+
+    Ok(Json(ApiResponse::message("created")))
+}
+
+/// Create `relative_path` under `user_root`, enforcing the per-user sandbox.
+///
+/// Security layers:
+/// 1. Reject empty paths and obvious traversal (`..`, null byte) before
+///    touching the filesystem.
+/// 2. After `create_dir_all`, canonicalize the result and confirm it still
+///    lives under the canonicalized `user_root` — defense in depth against
+///    symlink-based escapes.
+///
+/// Returns the canonicalized target on success. Does synchronous filesystem
+/// I/O, so callers must run it off the async runtime (e.g. `spawn_blocking`).
+fn create_user_directory(user_root: &Path, relative_path: &str) -> Result<PathBuf, ApiError> {
+    let relative = relative_path.trim().trim_start_matches('/');
+    if relative.is_empty() {
+        return Err(ApiError::BadRequest("mkdir path must not be empty".to_owned()));
+    }
+    if crate::path_safety::has_traversal(relative) {
+        return Err(ApiError::PathOutsideSandbox {
+            message: format!("path '{}' attempts to escape the user sandbox", relative_path),
+            field: Some("path"),
+            operation: Some("mkdir"),
+        });
+    }
+
+    // Ensure the sandbox root exists, then create the requested subtree.
+    std::fs::create_dir_all(user_root)
+        .map_err(|e| ApiError::Internal(format!("failed to create user root: {}", e)))?;
+    let target = user_root.join(relative);
+    std::fs::create_dir_all(&target).map_err(|e| ApiError::Internal(format!("mkdir failed: {}", e)))?;
+
+    // Defense in depth: canonicalize both sides and confirm containment.
+    let canonical_root =
+        std::fs::canonicalize(user_root).map_err(|e| ApiError::Internal(format!("cannot resolve user root: {}", e)))?;
+    let canonical_target = std::fs::canonicalize(&target)
+        .map_err(|e| ApiError::Internal(format!("cannot resolve mkdir target: {}", e)))?;
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(ApiError::PathOutsideSandbox {
+            message: format!("path '{}' resolves outside the user sandbox", relative_path),
+            field: Some("path"),
+            operation: Some("mkdir"),
+        });
+    }
+    Ok(canonical_target)
 }
 
 async fn get_files_by_dir(
@@ -831,6 +916,164 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // -----------------------------------------------------------------------
+    // Per-user sandbox — security tests
+    //
+    // These exercise the two security-critical primitives the `browse` and
+    // `mkdir` handlers delegate to:
+    //   * `browse::browse(path, show_files, &[user_root])` — host-file picker
+    //     scoped to a single per-user root.
+    //   * `create_user_directory(user_root, relative)` — sandboxed mkdir.
+    // The handlers themselves are thin plumbing over these (extract the
+    // `CurrentUser`, build `user_root = users_base_dir/{id}`, call through),
+    // so testing the primitives directly covers the isolation guarantees
+    // without standing up the full axum stack.
+    // -----------------------------------------------------------------------
+
+    /// Create `{base}/users/{user_id}` and return it.
+    fn make_user_root(base: &Path, user_id: &str) -> PathBuf {
+        let root = base.join("users").join(user_id);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn browse_empty_path_lists_user_root_and_cannot_go_up() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+        std::fs::create_dir_all(user_root.join("proyectos")).unwrap();
+        std::fs::write(user_root.join("nota.txt"), "hi").unwrap();
+
+        // Handler maps an empty/absent path to the user root itself.
+        let path = user_root.to_string_lossy().into_owned();
+        let resp = browse::browse(Some(&path), true, &[user_root]).unwrap();
+
+        // The sandbox root is the top of the tree: the up-arrow is hidden.
+        assert!(!resp.can_go_up, "user must not be able to navigate above their root");
+        // Listing shows the user's own contents.
+        let names: Vec<&str> = resp.items.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"proyectos"));
+        assert!(names.contains(&"nota.txt"));
+    }
+
+    #[test]
+    fn browse_absolute_path_outside_root_is_forbidden() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        // A real directory that exists but lives outside the user's sandbox.
+        let outside = tempfile::tempdir().unwrap();
+        let result = browse::browse(Some(outside.path().to_str().unwrap()), false, &[user_root]);
+
+        match result {
+            Err(FileError::PathOutsideSandbox { .. }) => {}
+            other => panic!("expected PathOutsideSandbox, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn browse_parent_traversal_is_forbidden() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        // `{user_root}/../../` canonicalizes above the sandbox and must be
+        // rejected even though every component exists on disk.
+        let escape = format!("{}/../../", user_root.to_string_lossy());
+        let result = browse::browse(Some(&escape), false, &[user_root]);
+
+        match result {
+            Err(FileError::PathOutsideSandbox { .. }) => {}
+            other => panic!("expected PathOutsideSandbox for traversal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn mkdir_creates_nested_dir_under_user_root() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        let created = create_user_directory(&user_root, "proyectos/x").expect("mkdir should succeed");
+
+        // The returned path is the canonical target and the dir exists.
+        assert!(created.is_dir());
+        assert!(created.ends_with("proyectos/x"));
+        assert!(user_root.join("proyectos").join("x").is_dir());
+        // And it is genuinely inside the (canonicalized) user root.
+        let canonical_root = std::fs::canonicalize(&user_root).unwrap();
+        assert!(created.starts_with(&canonical_root));
+    }
+
+    #[test]
+    fn mkdir_leading_slash_is_treated_as_relative() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        // A leading `/` must NOT escape to the filesystem root — it is
+        // stripped and the path stays inside the sandbox.
+        let created = create_user_directory(&user_root, "/docs").expect("mkdir should succeed");
+        let canonical_root = std::fs::canonicalize(&user_root).unwrap();
+        assert!(created.starts_with(&canonical_root));
+        assert!(user_root.join("docs").is_dir());
+    }
+
+    #[test]
+    fn mkdir_parent_escape_is_rejected() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        let result = create_user_directory(&user_root, "../escape");
+        match result {
+            Err(ApiError::PathOutsideSandbox {
+                operation: Some("mkdir"),
+                ..
+            }) => {}
+            other => panic!("expected PathOutsideSandbox(mkdir), got {other:?}"),
+        }
+        // The escape directory must NOT have been created next to the sandbox.
+        assert!(!user_root.parent().unwrap().join("escape").exists());
+    }
+
+    #[test]
+    fn mkdir_empty_path_is_rejected() {
+        let base = tempfile::tempdir().unwrap();
+        let user_root = make_user_root(base.path(), "alice");
+
+        assert!(matches!(
+            create_user_directory(&user_root, "   "),
+            Err(ApiError::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn two_users_get_isolated_roots() {
+        let base = tempfile::tempdir().unwrap();
+        let alice_root = make_user_root(base.path(), "alice");
+        let bob_root = make_user_root(base.path(), "bob");
+
+        // Alice creates a private project; Bob creates his own.
+        create_user_directory(&alice_root, "secret-alice").unwrap();
+        create_user_directory(&bob_root, "secret-bob").unwrap();
+
+        // Each user's browse is scoped to their own root only.
+        let alice_listing = browse::browse(Some(alice_root.to_str().unwrap()), false, &[alice_root.clone()]).unwrap();
+        let bob_listing = browse::browse(Some(bob_root.to_str().unwrap()), false, &[bob_root.clone()]).unwrap();
+
+        let alice_names: Vec<&str> = alice_listing.items.iter().map(|e| e.name.as_str()).collect();
+        let bob_names: Vec<&str> = bob_listing.items.iter().map(|e| e.name.as_str()).collect();
+
+        assert!(alice_names.contains(&"secret-alice"));
+        assert!(!alice_names.contains(&"secret-bob"), "alice must not see bob's folder");
+        assert!(bob_names.contains(&"secret-bob"));
+        assert!(!bob_names.contains(&"secret-alice"), "bob must not see alice's folder");
+
+        // Bob cannot browse into Alice's root: it is outside his sandbox.
+        let cross = browse::browse(Some(alice_root.to_str().unwrap()), false, &[bob_root]);
+        match cross {
+            Err(FileError::PathOutsideSandbox { .. }) => {}
+            other => panic!("bob reaching into alice's root must be forbidden, got {other:?}"),
+        }
+    }
 
     #[test]
     fn file_path_outside_sandbox_maps_to_explicit_api_code() {

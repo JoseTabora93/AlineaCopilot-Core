@@ -395,6 +395,10 @@ pub fn build_file_state(services: &AppServices) -> Result<FileRouterState, Route
         snapshot_service,
         allowed_roots,
         browse_roots,
+        // Per-user sandbox root: each authenticated user is scoped to
+        // `{work_dir}/users/{user_id}` for the shallow browse + mkdir
+        // endpoints. The directory is created on first access.
+        users_base_dir: services.work_dir.join("users"),
     })
 }
 

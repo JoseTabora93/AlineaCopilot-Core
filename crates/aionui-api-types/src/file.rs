@@ -87,6 +87,18 @@ pub struct CreateTempFileRequest {
     pub file_name: String,
 }
 
+/// Request body for `POST /api/fs/mkdir` — create a directory inside the
+/// current user's per-user sandbox.
+///
+/// `path` is interpreted relative to the caller's user root
+/// (`{work_dir}/users/{user_id}`). A leading `/` is stripped, and any
+/// attempt to escape the sandbox (e.g. `../escape`) is rejected by the
+/// handler before the directory is created.
+#[derive(Debug, Deserialize)]
+pub struct MkdirRequest {
+    pub path: String,
+}
+
 /// Request body for `POST /api/fs/image-base64` — get image as base64.
 #[derive(Debug, Deserialize)]
 pub struct GetImageBase64Request {

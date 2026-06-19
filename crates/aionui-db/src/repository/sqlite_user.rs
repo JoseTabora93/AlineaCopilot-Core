@@ -56,7 +56,7 @@ impl IUserRepository for SqliteUserRepository {
     async fn set_system_user_credentials(&self, username: &str, password_hash: &str) -> Result<(), DbError> {
         let now = aionui_common::now_ms();
         let result = sqlx::query(
-            "UPDATE users SET username = ?, password_hash = ?, updated_at = ? \
+            "UPDATE users SET username = ?, password_hash = ?, role = 'admin', updated_at = ? \
              WHERE id = 'system_default_user'",
         )
         .bind(username)
@@ -75,20 +75,45 @@ impl IUserRepository for SqliteUserRepository {
             return Err(DbError::NotFound("system_default_user not found".to_string()));
         }
 
+        // Multi-rol (Fase 2 #5): el bootstrap pone `users.role = 'admin'`, pero el
+        // gate de admin lee `user_roles`. Sin esta fila, el admin recién creado por
+        // el setup quedaría bloqueado (roles=[] → no admin). Materializa el rol.
+        sqlx::query("INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES ('system_default_user', ?, ?)")
+            .bind(ADMIN_ROLE)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+
         Ok(())
     }
 
     async fn create_user(&self, username: &str, password_hash: &str) -> Result<User, DbError> {
+        self.create_user_full(username, password_hash, None, None, "member")
+            .await
+    }
+
+    async fn create_user_full(
+        &self,
+        username: &str,
+        password_hash: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+        role: &str,
+    ) -> Result<User, DbError> {
         let id = aionui_common::generate_prefixed_id("user");
         let now = aionui_common::now_ms();
 
         sqlx::query(
-            "INSERT INTO users (id, username, password_hash, created_at, updated_at) \
-             VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO users \
+             (id, username, password_hash, email, display_name, role, is_active, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
         )
         .bind(&id)
         .bind(username)
         .bind(password_hash)
+        .bind(email)
+        .bind(display_name)
+        .bind(role)
         .bind(now)
         .bind(now)
         .execute(&self.pool)
@@ -103,13 +128,16 @@ impl IUserRepository for SqliteUserRepository {
         Ok(User {
             id,
             username: username.to_string(),
-            email: None,
+            email: email.map(str::to_string),
             password_hash: password_hash.to_string(),
             avatar_path: None,
             jwt_secret: None,
             created_at: now,
             updated_at: now,
             last_login: None,
+            role: role.to_string(),
+            is_active: true,
+            display_name: display_name.map(str::to_string),
         })
     }
 
@@ -132,7 +160,7 @@ impl IUserRepository for SqliteUserRepository {
     }
 
     async fn list_users(&self) -> Result<Vec<User>, DbError> {
-        let users = sqlx::query_as::<_, User>("SELECT * FROM users")
+        let users = sqlx::query_as::<_, User>("SELECT * FROM users ORDER BY created_at ASC")
             .fetch_all(&self.pool)
             .await?;
 
@@ -296,6 +324,73 @@ impl IUserRepository for SqliteUserRepository {
             .await?;
         Ok(row.0)
     }
+
+    async fn set_active(&self, user_id: &str, is_active: bool) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query("UPDATE users SET is_active = ?, updated_at = ? WHERE id = ?")
+            .bind(is_active)
+            .bind(now)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
+
+    async fn set_role(&self, user_id: &str, role: &str) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query("UPDATE users SET role = ?, updated_at = ? WHERE id = ?")
+            .bind(role)
+            .bind(now)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
+
+    async fn set_display_name(&self, user_id: &str, display_name: Option<&str>) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        let result = sqlx::query("UPDATE users SET display_name = ?, updated_at = ? WHERE id = ?")
+            .bind(display_name)
+            .bind(now)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
+
+    async fn delete_user(&self, user_id: &str) -> Result<(), DbError> {
+        // Dependent rows are removed by `ON DELETE CASCADE`:
+        //   conversations.user_id -> users.id            (cascade)
+        //   messages.conversation_id -> conversations.id (cascade)
+        //   conversation_artifacts.conversation_id       (cascade)
+        // The runtime pool enables `PRAGMA foreign_keys = ON`, so a single
+        // DELETE on `users` is sufficient — no manual transaction required.
+        let result = sqlx::query("DELETE FROM users WHERE id = ?")
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(DbError::NotFound(format!("User '{user_id}' not found")));
+        }
+
+        Ok(())
+    }
 }
 
 /// Checks if a SQLite database error is a UNIQUE constraint violation.
@@ -319,7 +414,6 @@ mod tests {
 
     #[test]
     fn unique_violation_code_detected() {
-        // SQLite UNIQUE violation has code "2067"
         assert!(is_unique_violation(&FakeDbError("2067")));
     }
 
@@ -328,7 +422,6 @@ mod tests {
         assert!(!is_unique_violation(&FakeDbError("1555")));
     }
 
-    /// Minimal fake for testing is_unique_violation.
     struct FakeDbError(&'static str);
 
     impl std::fmt::Display for FakeDbError {
@@ -366,7 +459,7 @@ mod tests {
         }
     }
 
-    // -- Integration tests that exercise the repository against in-memory SQLite --
+    // -- Integration tests against in-memory SQLite --
 
     #[tokio::test]
     async fn create_user_returns_populated_fields() {
@@ -382,6 +475,10 @@ mod tests {
         assert!(user.last_login.is_none());
         assert!(user.created_at > 0);
         assert_eq!(user.created_at, user.updated_at);
+        // New fields default
+        assert_eq!(user.role, "member");
+        assert!(user.is_active);
+        assert!(user.display_name.is_none());
     }
 
     #[tokio::test]
@@ -412,13 +509,14 @@ mod tests {
         let user = repo.get_system_user().await.unwrap().unwrap();
         assert_eq!(user.id, "system_default_user");
         assert_eq!(user.username, "admin");
+        // Seeded with role=admin by ensure_system_user
+        assert_eq!(user.role, "admin");
+        assert!(user.is_active);
     }
 
     #[tokio::test]
     async fn get_primary_webui_user_returns_system_user_first() {
         let (repo, _db) = setup().await;
-        // Can't use "admin" here: the seeded system_default_user already owns that
-        // username after the M6 default change. Any fresh user gets a different name.
         repo.create_user("other", "hash").await.unwrap();
 
         let user = repo.get_primary_webui_user().await.unwrap().unwrap();
@@ -560,6 +658,123 @@ mod tests {
         let user = repo.get_system_user().await.unwrap().unwrap();
         assert_eq!(user.username, "admin");
         assert_eq!(user.password_hash, "secure_hash");
+        // Role must remain admin (legacy column)
+        assert_eq!(user.role, "admin");
+        // Multi-rol (Fase 2 #5): el bootstrap también materializa el rol admin en
+        // user_roles, no solo en users.role — si no, el gate multi-rol (que lee
+        // user_roles) bloquearía al admin recién creado por el setup.
+        assert!(
+            repo.get_user_roles("system_default_user")
+                .await
+                .unwrap()
+                .contains(&"admin".to_string()),
+            "el admin del bootstrap debe tener el rol en user_roles"
+        );
+    }
+
+    // -- Tests for new multiuser fields (spec section 8) --
+
+    #[tokio::test]
+    async fn create_user_full_with_admin_role() {
+        let (repo, _db) = setup().await;
+        let user = repo
+            .create_user_full(
+                "superadmin",
+                "hash",
+                Some("sa@example.com"),
+                Some("Super Admin"),
+                "admin",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(user.role, "admin");
+        assert!(user.is_active);
+        assert_eq!(user.email.as_deref(), Some("sa@example.com"));
+        assert_eq!(user.display_name.as_deref(), Some("Super Admin"));
+    }
+
+    #[tokio::test]
+    async fn create_user_full_defaults_member_role() {
+        let (repo, _db) = setup().await;
+        let user = repo
+            .create_user_full("newbie", "h", None, None, "member")
+            .await
+            .unwrap();
+        assert_eq!(user.role, "member");
+        assert!(user.is_active);
+        assert!(user.display_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_active_false_persists() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("nina", "h").await.unwrap();
+        assert!(user.is_active);
+
+        repo.set_active(&user.id, false).await.unwrap();
+
+        let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
+        assert!(!updated.is_active);
+    }
+
+    #[tokio::test]
+    async fn set_active_nonexistent_user() {
+        let (repo, _db) = setup().await;
+        let err = repo.set_active("no_such_id", false).await.unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn set_role_updates_field() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("oscar", "h").await.unwrap();
+        assert_eq!(user.role, "member");
+
+        repo.set_role(&user.id, "admin").await.unwrap();
+
+        let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(updated.role, "admin");
+    }
+
+    #[tokio::test]
+    async fn set_display_name_roundtrip() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("paula", "h").await.unwrap();
+        assert!(user.display_name.is_none());
+
+        repo.set_display_name(&user.id, Some("Paula Smith")).await.unwrap();
+        let updated = repo.find_by_id(&user.id).await.unwrap().unwrap();
+        assert_eq!(updated.display_name.as_deref(), Some("Paula Smith"));
+
+        repo.set_display_name(&user.id, None).await.unwrap();
+        let cleared = repo.find_by_id(&user.id).await.unwrap().unwrap();
+        assert!(cleared.display_name.is_none());
+    }
+
+    #[tokio::test]
+    async fn system_default_user_has_admin_role() {
+        let (repo, _db) = setup().await;
+        let user = repo.get_system_user().await.unwrap().unwrap();
+        assert_eq!(user.role, "admin");
+        assert!(user.is_active);
+    }
+
+    #[tokio::test]
+    async fn delete_user_removes_row() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("quincy", "h").await.unwrap();
+
+        repo.delete_user(&user.id).await.unwrap();
+
+        assert!(repo.find_by_id(&user.id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_user_nonexistent_returns_not_found() {
+        let (repo, _db) = setup().await;
+        let err = repo.delete_user("no_such_id").await.unwrap_err();
+        assert!(matches!(err, DbError::NotFound(_)));
     }
 
     // -- RBAC eje 1: roles (Fase 2 #5) --

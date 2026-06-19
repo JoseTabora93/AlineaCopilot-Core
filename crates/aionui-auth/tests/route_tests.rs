@@ -13,7 +13,7 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use aionui_auth::{AuthRouterState, CookieConfig, JwtService, QrTokenStore, auth_routes, hash_password};
-use aionui_db::{IUserRepository, SqliteUserRepository, init_database_memory};
+use aionui_db::{ISettingsRepository, IUserRepository, SqliteSettingsRepository, SqliteUserRepository, init_database_memory};
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -37,6 +37,7 @@ async fn test_app_with_local(local: bool) -> (Router, TestContext) {
     let state = AuthRouterState {
         jwt_service: jwt_service.clone(),
         user_repo: user_repo.clone(),
+        settings_repo: Arc::new(SqliteSettingsRepository::new(db.pool().clone())) as Arc<dyn ISettingsRepository>,
         cookie_config,
         qr_token_store: qr_token_store.clone(),
         local,

@@ -37,10 +37,23 @@ pub trait IUserRepository: Send + Sync {
     /// Used during the initial bootstrap flow.
     async fn set_system_user_credentials(&self, username: &str, password_hash: &str) -> Result<(), DbError>;
 
-    /// Creates a new user and returns the inserted row.
+    /// Creates a new user with role `"member"` and returns the inserted row.
     ///
     /// Returns `DbError::Conflict` if the username already exists.
     async fn create_user(&self, username: &str, password_hash: &str) -> Result<User, DbError>;
+
+    /// Creates a new user with full control over all optional fields.
+    ///
+    /// `role` should be `"admin"` or `"member"`.
+    /// Returns `DbError::Conflict` if the username already exists.
+    async fn create_user_full(
+        &self,
+        username: &str,
+        password_hash: &str,
+        email: Option<&str>,
+        display_name: Option<&str>,
+        role: &str,
+    ) -> Result<User, DbError>;
 
     /// Finds a user by username.
     async fn find_by_username(&self, username: &str) -> Result<Option<User>, DbError>;
@@ -94,4 +107,31 @@ pub trait IUserRepository: Send + Sync {
     /// Cuenta cuántos usuarios tienen asignado `role_id`. Sostiene invariantes
     /// como "el sistema nunca queda sin administradores".
     async fn count_users_with_role(&self, role_id: &str) -> Result<i64, DbError>;
+
+    /// Sets the `is_active` flag.
+    ///
+    /// Setting `false` causes the auth middleware to reject subsequent login
+    /// attempts for this account (soft offboarding).
+    async fn set_active(&self, user_id: &str, is_active: bool) -> Result<(), DbError>;
+
+    /// Updates the legacy single `users.role` column (`"admin"` | `"member"`).
+    ///
+    /// Deprecado bajo multi-rol: la fuente de verdad de roles es `user_roles`
+    /// (ver [`assign_role`](Self::assign_role) / [`remove_role`](Self::remove_role)).
+    /// Se conserva para compatibilidad con el bootstrap/seed y datos legados.
+    async fn set_role(&self, user_id: &str, role: &str) -> Result<(), DbError>;
+
+    /// Updates the display name. Pass `None` to clear it.
+    async fn set_display_name(&self, user_id: &str, display_name: Option<&str>) -> Result<(), DbError>;
+
+    /// Permanently deletes a user by ID.
+    ///
+    /// Dependent rows owned by the user are removed by the schema's
+    /// `ON DELETE CASCADE` foreign keys (e.g. `conversations`, and transitively
+    /// `messages` / `conversation_artifacts`). Foreign-key enforcement must be
+    /// enabled on the connection (`PRAGMA foreign_keys = ON`) for the cascade to
+    /// take effect.
+    ///
+    /// Returns `DbError::NotFound` if no user with the given ID exists.
+    async fn delete_user(&self, user_id: &str) -> Result<(), DbError>;
 }
