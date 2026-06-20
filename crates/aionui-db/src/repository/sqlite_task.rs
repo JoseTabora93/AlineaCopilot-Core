@@ -211,6 +211,15 @@ impl ITaskRepository for SqliteTaskRepository {
         Ok(rows)
     }
 
+    async fn add_dependency(&self, task_id: &str, depends_on_task_id: &str) -> Result<(), DbError> {
+        sqlx::query("INSERT OR IGNORE INTO task_dependencies (task_id, depends_on_task_id) VALUES (?, ?)")
+            .bind(task_id)
+            .bind(depends_on_task_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     async fn add_artifact(&self, params: NewArtifact) -> Result<TaskArtifactRow, DbError> {
         let id = generate_id();
         let now = now_ms();

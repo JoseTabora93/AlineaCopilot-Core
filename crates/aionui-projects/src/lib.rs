@@ -6,5 +6,7 @@
 //! y el dispatch a agentes (OpenClaw).
 
 mod handoff;
+mod pipeline;
 
 pub use handoff::{HandoffEngine, HandoffOutcome};
+pub use pipeline::{PipelineError, PipelineService};

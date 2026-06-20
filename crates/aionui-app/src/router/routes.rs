@@ -225,12 +225,18 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // Projects routes (Fase 2 #2 — slice 3). `auth_middleware` externo pobla
     // `CurrentUser`; la autorización fina (membresía/owner vía resource_acl) vive
     // en cada handler.
+    let handoff = aionui_projects::HandoffEngine::new(services.task_repo.clone());
     let projects_authenticated = super::projects::project_routes(super::projects::ProjectRouterState {
         project_repo: services.project_repo.clone(),
         acl_repo: services.resource_acl_repo.clone(),
         user_repo: services.user_repo.clone(),
         task_repo: services.task_repo.clone(),
-        handoff: aionui_projects::HandoffEngine::new(services.task_repo.clone()),
+        pipeline: aionui_projects::PipelineService::new(
+            services.project_repo.clone(),
+            services.task_repo.clone(),
+            handoff.clone(),
+        ),
+        handoff,
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

@@ -717,6 +717,9 @@ name = "aionui-projects"
 version = "0.1.29"
 dependencies = [
  "aionui-db",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

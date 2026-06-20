@@ -87,6 +87,10 @@ pub trait ITaskRepository: Send + Sync {
     /// Tareas que DEPENDEN de `task_id` (las que se destrabarían al completarlo).
     async fn dependents_of(&self, task_id: &str) -> Result<Vec<TaskRow>, DbError>;
 
+    /// Añade una dependencia `task_id depends_on depends_on_task_id` (idempotente).
+    /// Usado al instanciar un pipeline (resolver keys→ids en un 2º paso).
+    async fn add_dependency(&self, task_id: &str, depends_on_task_id: &str) -> Result<(), DbError>;
+
     // ── Artefactos (entregables) ─────────────────────────────────────
     async fn add_artifact(&self, params: NewArtifact) -> Result<TaskArtifactRow, DbError>;
     async fn list_artifacts(&self, task_id: &str) -> Result<Vec<TaskArtifactRow>, DbError>;

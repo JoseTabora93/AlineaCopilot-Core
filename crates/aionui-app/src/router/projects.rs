@@ -28,7 +28,7 @@ use aionui_db::{
     IProjectRepository, IResourceAclRepository, ITaskRepository, IUserRepository, MemberRevoke, NewArtifact,
     NewHandoff, NewProject, NewTask, ProjectUpdate, TaskUpdate,
 };
-use aionui_projects::HandoffEngine;
+use aionui_projects::{HandoffEngine, PipelineError, PipelineService};
 
 #[derive(Clone)]
 pub struct ProjectRouterState {
@@ -40,10 +40,20 @@ pub struct ProjectRouterState {
     pub task_repo: Arc<dyn ITaskRepository>,
     /// Motor de handoffs: cascada de dependencias + bloqueo (slice 5).
     pub handoff: HandoffEngine,
+    /// Instanciación de pipelines desde plantillas (slice 6).
+    pub pipeline: PipelineService,
 }
 
 fn db_err(err: aionui_db::DbError) -> ApiError {
     ApiError::Internal(format!("Database error: {err}"))
+}
+
+fn pipeline_err(err: PipelineError) -> ApiError {
+    match err {
+        PipelineError::TemplateNotFound(t) => ApiError::NotFound(format!("template '{t}' not found")),
+        PipelineError::InvalidTemplate(m) => ApiError::Internal(format!("invalid template: {m}")),
+        PipelineError::Db(e) => ApiError::Internal(format!("Database error: {e}")),
+    }
 }
 
 /// Devuelve el `perm` del usuario sobre el proyecto, o 403 si no es miembro.
@@ -285,6 +295,29 @@ async fn list_templates(
         .await
         .map_err(db_err)?;
     Ok(Json(ApiResponse::ok(rows)))
+}
+
+#[derive(Debug, Deserialize)]
+struct InstantiatePipelineRequest {
+    template_id: String,
+}
+
+/// `POST /api/projects/{id}/pipeline` — instancia el árbol de tareas de una
+/// plantilla en el proyecto (owner). Es lo que Hermes invoca al "armar el plan".
+async fn instantiate_pipeline(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+    body: Result<Json<InstantiatePipelineRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<Vec<TaskRow>>>, ApiError> {
+    require_owner(&state, &project_id, &current.id).await?;
+    let Json(req) = body.map_err(ApiError::from)?;
+    let tasks = state
+        .pipeline
+        .instantiate(&project_id, &req.template_id, &current.id)
+        .await
+        .map_err(pipeline_err)?;
+    Ok(Json(ApiResponse::ok(tasks)))
 }
 
 // ── Tareas / subtareas (slice 4) ─────────────────────────────────────
@@ -597,6 +630,7 @@ pub fn project_routes(state: ProjectRouterState) -> Router {
         .route("/api/tasks/{id}/transition", post(transition_task))
         .route("/api/tasks/{id}/artifacts", get(list_artifacts).post(add_artifact))
         .route("/api/tasks/{id}/handoffs", get(list_handoffs))
+        .route("/api/projects/{id}/pipeline", post(instantiate_pipeline))
         .route("/api/pipeline-templates", get(list_templates))
         .with_state(state)
 }
