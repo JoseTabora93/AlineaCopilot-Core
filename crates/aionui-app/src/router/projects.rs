@@ -15,15 +15,19 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use serde::Deserialize;
 
 use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
-use aionui_db::models::{PipelineTemplateRow, ProjectRow, ResourceAclRow};
-use aionui_db::{IProjectRepository, IResourceAclRepository, IUserRepository, MemberRevoke, NewProject, ProjectUpdate};
+use aionui_db::models::{PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskRow};
+use aionui_db::task_state::{TaskAction, TaskStatus, next_status};
+use aionui_db::{
+    IProjectRepository, IResourceAclRepository, ITaskRepository, IUserRepository, MemberRevoke, NewProject, NewTask,
+    ProjectUpdate, TaskUpdate,
+};
 
 #[derive(Clone)]
 pub struct ProjectRouterState {
@@ -31,6 +35,8 @@ pub struct ProjectRouterState {
     pub acl_repo: Arc<dyn IResourceAclRepository>,
     /// Para validar que el `user_id` objetivo de `add_member` existe.
     pub user_repo: Arc<dyn IUserRepository>,
+    /// Tareas/subtareas del proyecto (slice 4).
+    pub task_repo: Arc<dyn ITaskRepository>,
 }
 
 fn db_err(err: aionui_db::DbError) -> ApiError {
@@ -278,6 +284,206 @@ async fn list_templates(
     Ok(Json(ApiResponse::ok(rows)))
 }
 
+// ── Tareas / subtareas (slice 4) ─────────────────────────────────────
+
+/// Obtiene la tarea y exige que el usuario sea miembro de su proyecto (403/404).
+async fn require_task_member(state: &ProjectRouterState, task_id: &str, user_id: &str) -> Result<TaskRow, ApiError> {
+    let task = state
+        .task_repo
+        .get(task_id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::NotFound(format!("Task {task_id} not found")))?;
+    require_member(state, &task.project_id, user_id).await?;
+    Ok(task)
+}
+
+fn default_assignee_kind() -> String {
+    "human".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateTaskRequest {
+    title: String,
+    instructions: Option<String>,
+    parent_task_id: Option<String>,
+    #[serde(default = "default_assignee_kind")]
+    assignee_kind: String,
+    assignee_id: Option<String>,
+    #[serde(default = "default_true")]
+    requires_human_review: bool,
+    produces_artifact: Option<String>,
+    #[serde(default)]
+    order_index: i64,
+    #[serde(default)]
+    depends_on: Vec<String>,
+}
+
+async fn create_task(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+    body: Result<Json<CreateTaskRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    require_member(&state, &project_id, &current.id).await?;
+    let Json(req) = body.map_err(ApiError::from)?;
+    if req.title.trim().is_empty() {
+        return Err(ApiError::BadRequest("title is required".into()));
+    }
+    if !matches!(req.assignee_kind.as_str(), "human" | "agent") {
+        return Err(ApiError::BadRequest("assignee_kind must be 'human' or 'agent'".into()));
+    }
+    // Una subtarea debe pertenecer al MISMO proyecto que su padre.
+    if let Some(parent_id) = &req.parent_task_id {
+        let parent = state
+            .task_repo
+            .get(parent_id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| ApiError::BadRequest("parent_task_id not found".into()))?;
+        if parent.project_id != project_id {
+            return Err(ApiError::BadRequest("parent task belongs to another project".into()));
+        }
+    }
+    let task = state
+        .task_repo
+        .create(NewTask {
+            project_id: project_id.clone(),
+            parent_task_id: req.parent_task_id,
+            title: req.title.trim().to_string(),
+            instructions: req.instructions,
+            assignee_kind: req.assignee_kind,
+            assignee_id: req.assignee_id,
+            requires_human_review: req.requires_human_review,
+            produces_artifact: req.produces_artifact,
+            order_index: req.order_index,
+            created_by: current.id.clone(),
+            depends_on: req.depends_on,
+        })
+        .await
+        .map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(task)))
+}
+
+async fn list_tasks(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(project_id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<TaskRow>>>, ApiError> {
+    require_member(&state, &project_id, &current.id).await?;
+    let tasks = state.task_repo.list_by_project(&project_id).await.map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(tasks)))
+}
+
+async fn get_task(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    let task = require_task_member(&state, &id, &current.id).await?;
+    Ok(Json(ApiResponse::ok(task)))
+}
+
+#[derive(Debug, Deserialize)]
+struct UpdateTaskRequest {
+    title: Option<String>,
+    instructions: Option<Option<String>>,
+    assignee_kind: Option<String>,
+    assignee_id: Option<Option<String>>,
+    requires_human_review: Option<bool>,
+    order_index: Option<i64>,
+}
+
+async fn update_task(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<UpdateTaskRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    require_task_member(&state, &id, &current.id).await?;
+    let Json(req) = body.map_err(ApiError::from)?;
+    if let Some(ref k) = req.assignee_kind
+        && !matches!(k.as_str(), "human" | "agent")
+    {
+        return Err(ApiError::BadRequest("assignee_kind must be 'human' or 'agent'".into()));
+    }
+    state
+        .task_repo
+        .update(
+            &id,
+            TaskUpdate {
+                title: req.title,
+                instructions: req.instructions,
+                assignee_kind: req.assignee_kind,
+                assignee_id: req.assignee_id,
+                requires_human_review: req.requires_human_review,
+                order_index: req.order_index,
+            },
+        )
+        .await
+        .map_err(db_err)?;
+    let task = state
+        .task_repo
+        .get(&id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::NotFound(format!("Task {id} not found")))?;
+    Ok(Json(ApiResponse::ok(task)))
+}
+
+#[derive(Debug, Deserialize)]
+struct TransitionRequest {
+    /// 'start' | 'submit' | 'approve' | 'reject' | 'reopen'.
+    action: String,
+}
+
+async fn transition_task(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<TransitionRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TaskRow>>, ApiError> {
+    let task = require_task_member(&state, &id, &current.id).await?;
+    // NOTA (precondición slice 7): hoy cualquier miembro puede transicionar
+    // cualquier tarea (board 100% humano). Cuando OpenClaw ejecute tareas de
+    // agente, `approve`/`reject` NO debe poder hacerlo el propio agente ni el
+    // assignee de la tarea de agente — debe ser un humano revisor distinto.
+    let Json(req) = body.map_err(ApiError::from)?;
+    let action = TaskAction::parse(&req.action).ok_or_else(|| ApiError::BadRequest("invalid action".into()))?;
+    let from = TaskStatus::parse(&task.status).ok_or_else(|| ApiError::Internal("corrupt task status".into()))?;
+    let to = next_status(from, action, task.requires_human_review).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "illegal transition from '{}' via '{}'",
+            task.status, req.action
+        ))
+    })?;
+    // 'start' exige que TODAS las dependencias estén 'done'.
+    if action == TaskAction::Start && !state.task_repo.dependencies_satisfied(&id).await.map_err(db_err)? {
+        return Err(ApiError::BadRequest("task dependencies are not all done".into()));
+    }
+    state.task_repo.set_status(&id, to.as_str()).await.map_err(db_err)?;
+    // Rollup: si una subtarea llega a 'done' y TODAS las subtareas del padre
+    // están 'done', el padre se cierra automáticamente.
+    if to == TaskStatus::Done
+        && let Some(parent_id) = task.parent_task_id.as_deref()
+    {
+        let (total, done) = state.task_repo.subtask_rollup(parent_id).await.map_err(db_err)?;
+        if total > 0 && total == done {
+            state.task_repo.set_status(parent_id, "done").await.map_err(db_err)?;
+        }
+    }
+    let updated = state
+        .task_repo
+        .get(&id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::NotFound(format!("Task {id} not found")))?;
+    Ok(Json(ApiResponse::ok(updated)))
+}
+
 /// Router de Proyectos. El llamador añade `auth_middleware` (capa externa) para
 /// poblar `CurrentUser`; la autorización fina (membresía/owner) vive en cada handler.
 pub fn project_routes(state: ProjectRouterState) -> Router {
@@ -286,6 +492,9 @@ pub fn project_routes(state: ProjectRouterState) -> Router {
         .route("/api/projects/{id}", get(get_project).patch(update_project))
         .route("/api/projects/{id}/members", get(list_members).post(add_member))
         .route("/api/projects/{id}/members/{uid}", delete(remove_member))
+        .route("/api/projects/{id}/tasks", get(list_tasks).post(create_task))
+        .route("/api/tasks/{id}", get(get_task).patch(update_task))
+        .route("/api/tasks/{id}/transition", post(transition_task))
         .route("/api/pipeline-templates", get(list_templates))
         .with_state(state)
 }

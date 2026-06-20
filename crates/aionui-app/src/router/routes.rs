@@ -229,6 +229,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         project_repo: services.project_repo.clone(),
         acl_repo: services.resource_acl_repo.clone(),
         user_repo: services.user_repo.clone(),
+        task_repo: services.task_repo.clone(),
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

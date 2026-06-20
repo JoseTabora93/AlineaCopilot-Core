@@ -15,11 +15,11 @@ use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IProjectRepository, IResourceAclRepository, IUsageRepository, IUserRepository, SqliteAcpSessionRepository,
-    SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
-    SqliteAssistantPreferenceRepository, SqliteConversationRepository, SqliteMcpServerRepository,
-    SqliteProjectRepository, SqliteProviderRepository, SqliteResourceAclRepository, SqliteUsageRepository,
-    SqliteUserRepository,
+    IProjectRepository, IResourceAclRepository, ITaskRepository, IUsageRepository, IUserRepository,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
+    SqliteMcpServerRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteResourceAclRepository,
+    SqliteTaskRepository, SqliteUsageRepository, SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;
@@ -37,6 +37,8 @@ pub struct AppServices {
     /// ACL de recursos (membresía de proyecto, eje 2). Lo consume el gate
     /// fail-closed de `ConversationService::update`.
     pub resource_acl_repo: Arc<dyn IResourceAclRepository>,
+    /// Tareas/subtareas de proyecto (Fase 2 #2 — slice 4).
+    pub task_repo: Arc<dyn ITaskRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -118,6 +120,7 @@ impl AppServices {
         let project_repo: Arc<dyn IProjectRepository> = Arc::new(SqliteProjectRepository::new(database.pool().clone()));
         let resource_acl_repo: Arc<dyn IResourceAclRepository> =
             Arc::new(SqliteResourceAclRepository::new(database.pool().clone()));
+        let task_repo: Arc<dyn ITaskRepository> = Arc::new(SqliteTaskRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -262,6 +265,7 @@ impl AppServices {
             usage_repo,
             project_repo,
             resource_acl_repo,
+            task_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
