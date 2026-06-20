@@ -29,3 +29,31 @@ pub struct TaskRow {
     pub started_at: Option<TimestampMs>,
     pub completed_at: Option<TimestampMs>,
 }
+
+/// Entregable producido por una tarea (BOM, alcances de obra, doc, archivo…).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct TaskArtifactRow {
+    pub id: String,
+    pub task_id: String,
+    /// 'bom' | 'alcances_obra' | 'doc' | 'file' | 'link' | 'conversation_ref'.
+    pub kind: String,
+    pub uri: String,
+    pub title: String,
+    pub produced_by: String,
+    pub created_at: TimestampMs,
+}
+
+/// Entrada de auditoría de un handoff/transición (modelo supervisor/ejecutor).
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct TaskHandoffLogRow {
+    pub id: String,
+    pub task_id: String,
+    pub from_status: Option<String>,
+    pub to_status: String,
+    /// 'system' | 'hermes' | 'openclaw' | user_id.
+    pub actor: String,
+    /// 'manual' | 'dependency_satisfied' | 'agent_completed' | 'approval' | 'rejection'.
+    pub trigger_kind: String,
+    pub note: Option<String>,
+    pub created_at: TimestampMs,
+}

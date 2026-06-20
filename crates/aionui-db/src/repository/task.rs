@@ -5,7 +5,26 @@
 //! agentes) llega en slices 5-7.
 
 use crate::DbError;
-use crate::models::TaskRow;
+use crate::models::{TaskArtifactRow, TaskHandoffLogRow, TaskRow};
+
+/// Parámetros para registrar un artefacto (entregable) de una tarea.
+pub struct NewArtifact {
+    pub task_id: String,
+    pub kind: String,
+    pub uri: String,
+    pub title: String,
+    pub produced_by: String,
+}
+
+/// Parámetros para registrar una entrada en el log de handoffs.
+pub struct NewHandoff {
+    pub task_id: String,
+    pub from_status: Option<String>,
+    pub to_status: String,
+    pub actor: String,
+    pub trigger_kind: String,
+    pub note: Option<String>,
+}
 
 /// Parámetros para crear una tarea (o subtarea, si `parent_task_id` es `Some`).
 pub struct NewTask {
@@ -64,4 +83,15 @@ pub trait ITaskRepository: Send + Sync {
 
     /// `(total, done)` de subtareas directas de `parent_task_id` (para rollup).
     async fn subtask_rollup(&self, parent_task_id: &str) -> Result<(i64, i64), DbError>;
+
+    /// Tareas que DEPENDEN de `task_id` (las que se destrabarían al completarlo).
+    async fn dependents_of(&self, task_id: &str) -> Result<Vec<TaskRow>, DbError>;
+
+    // ── Artefactos (entregables) ─────────────────────────────────────
+    async fn add_artifact(&self, params: NewArtifact) -> Result<TaskArtifactRow, DbError>;
+    async fn list_artifacts(&self, task_id: &str) -> Result<Vec<TaskArtifactRow>, DbError>;
+
+    // ── Log de handoffs (auditoría supervisor/ejecutor) ──────────────
+    async fn log_handoff(&self, entry: NewHandoff) -> Result<(), DbError>;
+    async fn list_handoffs(&self, task_id: &str) -> Result<Vec<TaskHandoffLogRow>, DbError>;
 }

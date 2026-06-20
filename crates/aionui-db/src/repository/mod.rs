@@ -73,7 +73,7 @@ pub use sqlite_task::SqliteTaskRepository;
 pub use sqlite_team::SqliteTeamRepository;
 pub use sqlite_usage::SqliteUsageRepository;
 pub use sqlite_user::SqliteUserRepository;
-pub use task::{ITaskRepository, NewTask, TaskUpdate};
+pub use task::{ITaskRepository, NewArtifact, NewHandoff, NewTask, TaskUpdate};
 pub use team::ITeamRepository;
 pub use usage::IUsageRepository;
 pub use user::{IUserRepository, RoleRemoval};

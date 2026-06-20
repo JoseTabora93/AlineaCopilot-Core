@@ -4,8 +4,8 @@ use aionui_common::{generate_id, now_ms};
 use sqlx::SqlitePool;
 
 use crate::DbError;
-use crate::models::TaskRow;
-use crate::repository::task::{ITaskRepository, NewTask, TaskUpdate};
+use crate::models::{TaskArtifactRow, TaskHandoffLogRow, TaskRow};
+use crate::repository::task::{ITaskRepository, NewArtifact, NewHandoff, NewTask, TaskUpdate};
 
 pub struct SqliteTaskRepository {
     pool: SqlitePool,
@@ -198,6 +198,83 @@ impl ITaskRepository for SqliteTaskRepository {
         .await?;
         Ok((row.0, row.1))
     }
+
+    async fn dependents_of(&self, task_id: &str) -> Result<Vec<TaskRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskRow>(
+            "SELECT t.* FROM tasks t \
+             JOIN task_dependencies d ON d.task_id = t.id \
+             WHERE d.depends_on_task_id = ?",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn add_artifact(&self, params: NewArtifact) -> Result<TaskArtifactRow, DbError> {
+        let id = generate_id();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO task_artifacts (id, task_id, kind, uri, title, produced_by, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(&params.task_id)
+        .bind(&params.kind)
+        .bind(&params.uri)
+        .bind(&params.title)
+        .bind(&params.produced_by)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(TaskArtifactRow {
+            id,
+            task_id: params.task_id,
+            kind: params.kind,
+            uri: params.uri,
+            title: params.title,
+            produced_by: params.produced_by,
+            created_at: now,
+        })
+    }
+
+    async fn list_artifacts(&self, task_id: &str) -> Result<Vec<TaskArtifactRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskArtifactRow>(
+            "SELECT * FROM task_artifacts WHERE task_id = ? ORDER BY created_at ASC",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn log_handoff(&self, entry: NewHandoff) -> Result<(), DbError> {
+        sqlx::query(
+            "INSERT INTO task_handoff_log (id, task_id, from_status, to_status, actor, trigger_kind, note, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(generate_id())
+        .bind(&entry.task_id)
+        .bind(&entry.from_status)
+        .bind(&entry.to_status)
+        .bind(&entry.actor)
+        .bind(&entry.trigger_kind)
+        .bind(&entry.note)
+        .bind(now_ms())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_handoffs(&self, task_id: &str) -> Result<Vec<TaskHandoffLogRow>, DbError> {
+        let rows = sqlx::query_as::<_, TaskHandoffLogRow>(
+            "SELECT * FROM task_handoff_log WHERE task_id = ? ORDER BY created_at ASC",
+        )
+        .bind(task_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -326,5 +403,41 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, DbError::NotFound(_)));
+    }
+
+    #[tokio::test]
+    async fn artifacts_and_handoff_log() {
+        let (repo, pid) = setup().await;
+        let t = repo.create(new_task(&pid, "T")).await.unwrap();
+
+        let art = repo
+            .add_artifact(NewArtifact {
+                task_id: t.id.clone(),
+                kind: "bom".to_string(),
+                uri: "/sandbox/u1/bom.xlsx".to_string(),
+                title: "BOM Torre A".to_string(),
+                produced_by: "u1".to_string(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(art.kind, "bom");
+        let arts = repo.list_artifacts(&t.id).await.unwrap();
+        assert_eq!(arts.len(), 1);
+        assert_eq!(arts[0].title, "BOM Torre A");
+
+        repo.log_handoff(NewHandoff {
+            task_id: t.id.clone(),
+            from_status: Some("todo".to_string()),
+            to_status: "in_progress".to_string(),
+            actor: "u1".to_string(),
+            trigger_kind: "manual".to_string(),
+            note: None,
+        })
+        .await
+        .unwrap();
+        let log = repo.list_handoffs(&t.id).await.unwrap();
+        assert_eq!(log.len(), 1);
+        assert_eq!(log[0].trigger_kind, "manual");
+        assert_eq!(log[0].to_status, "in_progress");
     }
 }

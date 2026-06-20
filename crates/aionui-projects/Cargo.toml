@@ -1,0 +1,10 @@
+[package]
+name = "aionui-projects"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aionui-db.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

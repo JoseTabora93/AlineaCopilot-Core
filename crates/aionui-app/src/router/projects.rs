@@ -22,12 +22,13 @@ use serde::Deserialize;
 use aionui_api_types::ApiResponse;
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
-use aionui_db::models::{PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskRow};
+use aionui_db::models::{PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskArtifactRow, TaskHandoffLogRow, TaskRow};
 use aionui_db::task_state::{TaskAction, TaskStatus, next_status};
 use aionui_db::{
-    IProjectRepository, IResourceAclRepository, ITaskRepository, IUserRepository, MemberRevoke, NewProject, NewTask,
-    ProjectUpdate, TaskUpdate,
+    IProjectRepository, IResourceAclRepository, ITaskRepository, IUserRepository, MemberRevoke, NewArtifact,
+    NewHandoff, NewProject, NewTask, ProjectUpdate, TaskUpdate,
 };
+use aionui_projects::HandoffEngine;
 
 #[derive(Clone)]
 pub struct ProjectRouterState {
@@ -37,6 +38,8 @@ pub struct ProjectRouterState {
     pub user_repo: Arc<dyn IUserRepository>,
     /// Tareas/subtareas del proyecto (slice 4).
     pub task_repo: Arc<dyn ITaskRepository>,
+    /// Motor de handoffs: cascada de dependencias + bloqueo (slice 5).
+    pub handoff: HandoffEngine,
 }
 
 fn db_err(err: aionui_db::DbError) -> ApiError {
@@ -365,6 +368,16 @@ async fn create_task(
         })
         .await
         .map_err(db_err)?;
+    // Si nace con dependencias no satisfechas, el engine la deja 'blocked'.
+    if state.handoff.block_if_unsatisfied(&task.id).await.map_err(db_err)? {
+        let blocked = state
+            .task_repo
+            .get(&task.id)
+            .await
+            .map_err(db_err)?
+            .ok_or_else(|| ApiError::NotFound(format!("Task {} not found", task.id)))?;
+        return Ok(Json(ApiResponse::ok(blocked)));
+    }
     Ok(Json(ApiResponse::ok(task)))
 }
 
@@ -465,14 +478,46 @@ async fn transition_task(
         return Err(ApiError::BadRequest("task dependencies are not all done".into()));
     }
     state.task_repo.set_status(&id, to.as_str()).await.map_err(db_err)?;
-    // Rollup: si una subtarea llega a 'done' y TODAS las subtareas del padre
-    // están 'done', el padre se cierra automáticamente.
-    if to == TaskStatus::Done
-        && let Some(parent_id) = task.parent_task_id.as_deref()
-    {
-        let (total, done) = state.task_repo.subtask_rollup(parent_id).await.map_err(db_err)?;
-        if total > 0 && total == done {
-            state.task_repo.set_status(parent_id, "done").await.map_err(db_err)?;
+    // Auditoría del handoff (manual / approval / rejection).
+    let trigger_kind = match action {
+        TaskAction::Approve => "approval",
+        TaskAction::Reject => "rejection",
+        _ => "manual",
+    };
+    state
+        .task_repo
+        .log_handoff(NewHandoff {
+            task_id: id.clone(),
+            from_status: Some(from.as_str().to_string()),
+            to_status: to.as_str().to_string(),
+            actor: current.id.clone(),
+            trigger_kind: trigger_kind.to_string(),
+            note: None,
+        })
+        .await
+        .map_err(db_err)?;
+    // Al cerrar una tarea: cascada de dependencias (destraba dependientes) +
+    // rollup del padre (que a su vez cascada a SUS dependientes).
+    if to == TaskStatus::Done {
+        state.handoff.on_task_completed(&id).await.map_err(db_err)?;
+        if let Some(parent_id) = task.parent_task_id.as_deref() {
+            let (total, done) = state.task_repo.subtask_rollup(parent_id).await.map_err(db_err)?;
+            if total > 0 && total == done {
+                state.task_repo.set_status(parent_id, "done").await.map_err(db_err)?;
+                state
+                    .task_repo
+                    .log_handoff(NewHandoff {
+                        task_id: parent_id.to_string(),
+                        from_status: None,
+                        to_status: "done".to_string(),
+                        actor: "system".to_string(),
+                        trigger_kind: "dependency_satisfied".to_string(),
+                        note: Some("all subtasks done".to_string()),
+                    })
+                    .await
+                    .map_err(db_err)?;
+                state.handoff.on_task_completed(parent_id).await.map_err(db_err)?;
+            }
         }
     }
     let updated = state
@@ -482,6 +527,61 @@ async fn transition_task(
         .map_err(db_err)?
         .ok_or_else(|| ApiError::NotFound(format!("Task {id} not found")))?;
     Ok(Json(ApiResponse::ok(updated)))
+}
+
+// ── Artefactos + log de handoffs (slice 5) ───────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AddArtifactRequest {
+    /// 'bom' | 'alcances_obra' | 'doc' | 'file' | 'link' | 'conversation_ref'.
+    kind: String,
+    uri: String,
+    title: String,
+}
+
+async fn add_artifact(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+    body: Result<Json<AddArtifactRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<TaskArtifactRow>>, ApiError> {
+    require_task_member(&state, &id, &current.id).await?;
+    let Json(req) = body.map_err(ApiError::from)?;
+    if req.uri.trim().is_empty() || req.title.trim().is_empty() {
+        return Err(ApiError::BadRequest("uri and title are required".into()));
+    }
+    let artifact = state
+        .task_repo
+        .add_artifact(NewArtifact {
+            task_id: id.clone(),
+            kind: req.kind,
+            uri: req.uri,
+            title: req.title,
+            produced_by: current.id.clone(),
+        })
+        .await
+        .map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(artifact)))
+}
+
+async fn list_artifacts(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<TaskArtifactRow>>>, ApiError> {
+    require_task_member(&state, &id, &current.id).await?;
+    let artifacts = state.task_repo.list_artifacts(&id).await.map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(artifacts)))
+}
+
+async fn list_handoffs(
+    State(state): State<ProjectRouterState>,
+    Extension(current): Extension<CurrentUser>,
+    Path(id): Path<String>,
+) -> Result<Json<ApiResponse<Vec<TaskHandoffLogRow>>>, ApiError> {
+    require_task_member(&state, &id, &current.id).await?;
+    let log = state.task_repo.list_handoffs(&id).await.map_err(db_err)?;
+    Ok(Json(ApiResponse::ok(log)))
 }
 
 /// Router de Proyectos. El llamador añade `auth_middleware` (capa externa) para
@@ -495,6 +595,8 @@ pub fn project_routes(state: ProjectRouterState) -> Router {
         .route("/api/projects/{id}/tasks", get(list_tasks).post(create_task))
         .route("/api/tasks/{id}", get(get_task).patch(update_task))
         .route("/api/tasks/{id}/transition", post(transition_task))
+        .route("/api/tasks/{id}/artifacts", get(list_artifacts).post(add_artifact))
+        .route("/api/tasks/{id}/handoffs", get(list_handoffs))
         .route("/api/pipeline-templates", get(list_templates))
         .with_state(state)
 }
