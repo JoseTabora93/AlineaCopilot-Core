@@ -63,12 +63,16 @@ fn inject_identity_env(
         // conversación como unidad mínima de aislamiento, **prefijada `conv:`**
         // para que un consumidor de scope-por-proyecto nunca confunda un
         // conversation_id con un project_id real (review de seguridad).
-        // ⚠️ SEGURIDAD: hoy `project_id` de la conversación se asigna SIN check de
-        // membresía (la membresía vive en Paca/`resource_acl`, aún sin cablear).
-        // ANTES de que cualquier consumidor lea `claims.project_id` para decidir
-        // acceso (RAG-por-proyecto), `ConversationService::update` DEBE rechazar
-        // asignaciones a proyectos donde el usuario no es miembro (fail-closed).
-        Some(ctx.project_id.clone().unwrap_or_else(|| format!("conv:{}", ctx.conversation_id))),
+        // 🔒 SEGURIDAD (Fase 2 #2 — slice 3, gate CERRADO): el `project_id` de la
+        // conversación solo pudo asignarse vía `ConversationService::update`, que
+        // YA valida membresía fail-closed contra `resource_acl` (rechaza con
+        // Forbidden a un no-miembro). Por eso el claim que viaja firmado aquí
+        // tiene scope legítimo: nunca puede portar un proyecto ajeno.
+        Some(
+            ctx.project_id
+                .clone()
+                .unwrap_or_else(|| format!("conv:{}", ctx.conversation_id)),
+        ),
         Vec::new(),
         now_ms,
         IDENTITY_TOKEN_TTL_MS,

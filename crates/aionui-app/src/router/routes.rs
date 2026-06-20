@@ -222,6 +222,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Projects routes (Fase 2 #2 — slice 3). `auth_middleware` externo pobla
+    // `CurrentUser`; la autorización fina (membresía/owner vía resource_acl) vive
+    // en cada handler.
+    let projects_authenticated = super::projects::project_routes(super::projects::ProjectRouterState {
+        project_repo: services.project_repo.clone(),
+        acl_repo: services.resource_acl_repo.clone(),
+        user_repo: services.user_repo.clone(),
+    })
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office routes protected by auth middleware
     let office_authenticated =
         office_routes(states.office.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -276,6 +286,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(team_authenticated)
         .merge(cron_authenticated)
         .merge(usage_authenticated)
+        .merge(projects_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
