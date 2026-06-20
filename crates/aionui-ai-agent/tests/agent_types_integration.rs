@@ -196,6 +196,7 @@ async fn collect_idle_ignores_aionrs_agent_type() {
         };
         BuildTaskOptions::new(AgentSessionContext {
             conversation: ConversationContext {
+                project_id: None,
                 conversation_id: id.into(),
                 user_id: "user-1".into(),
                 roles: vec![],

@@ -6,6 +6,7 @@ mod error;
 pub mod models;
 pub mod pricing;
 mod repository;
+pub mod task_state;
 
 pub use database::{
     Database, DatabaseInitError, init_database, init_database_memory, init_database_staged, maybe_copy_legacy_database,
@@ -14,6 +15,7 @@ pub use error::DbError;
 pub use models::{
     AgentMetadataRow, AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow, AssistantPreferenceRow,
     AssistantRow, ConversationArtifactRow, ConversationAssistantSnapshotRow, CreateAssistantParams,
+    PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskArtifactRow, TaskHandoffLogRow, TaskRow,
     UpdateAgentHandshakeParams, UpdateAssistantParams, UpsertAgentMetadataParams, UpsertAssistantDefinitionParams,
     UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams,
     UpsertOverrideParams,
@@ -32,15 +34,16 @@ pub use repository::{
     CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository,
     IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
     IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
-    IOAuthTokenRepository, IProviderRepository, IRemoteAgentRepository, ISettingsRepository, ITeamRepository,
-    IUsageRepository, IUserRepository, PersistedSessionState, RoleRemoval, SaveRuntimeStateParams,
-    SqliteAcpSessionRepository,
-    SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
-    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
-    SqliteChannelRepository, SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository,
-    SqliteMcpServerRepository, SqliteOAuthTokenRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
-    SqliteSettingsRepository, SqliteTeamRepository, SqliteUsageRepository, SqliteUserRepository,
-    rebuild_legacy_assistant_mirror,
+    IOAuthTokenRepository, IProjectRepository, IProviderRepository, IRemoteAgentRepository, IResourceAclRepository,
+    ISettingsRepository, ITaskRepository, ITeamRepository, IUsageRepository, IUserRepository, MemberRevoke,
+    NewArtifact, NewHandoff, NewProject, NewTask, PersistedSessionState, ProjectUpdate, RoleRemoval,
+    SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
+    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteChannelRepository,
+    SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository,
+    SqliteOAuthTokenRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
+    SqliteResourceAclRepository, SqliteSettingsRepository, SqliteTaskRepository, SqliteTeamRepository,
+    SqliteUsageRepository, SqliteUserRepository, TaskUpdate, rebuild_legacy_assistant_mirror,
 };
 
 // Re-export sqlx pool type for downstream crates

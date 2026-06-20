@@ -506,6 +506,8 @@ pub async fn build_channel_state(
     conversation_svc.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
         services.database.pool().clone(),
     )));
+    // Gate fail-closed de membresía de proyecto (Fase 2 #2).
+    conversation_svc.with_resource_acl_repo(services.resource_acl_repo.clone());
     if let Some(hook) = services.task_manager_delete_hook.clone() {
         conversation_svc.with_delete_hook(hook);
     }
@@ -623,6 +625,8 @@ pub fn build_cron_state(services: &AppServices) -> CronRouterState {
     conv_service.with_mcp_server_repo(Arc::new(aionui_db::SqliteMcpServerRepository::new(
         services.database.pool().clone(),
     )));
+    // Gate fail-closed de membresía de proyecto (Fase 2 #2).
+    conv_service.with_resource_acl_repo(services.resource_acl_repo.clone());
 
     let executor = Arc::new(aionui_cron::executor::JobExecutor::new(
         services.worker_task_manager.clone(),

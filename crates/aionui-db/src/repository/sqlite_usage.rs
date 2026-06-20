@@ -22,7 +22,13 @@ impl IUsageRepository for SqliteUsageRepository {
     async fn record_event(&self, e: NewUsageEvent) -> Result<(), DbError> {
         let id = aionui_common::generate_prefixed_id("usage");
         let now = aionui_common::now_ms();
-        let cost = pricing::estimate_cost_usd(e.model.as_deref(), e.tokens_in, e.tokens_out, e.cache_read, e.cache_write);
+        let cost = pricing::estimate_cost_usd(
+            e.model.as_deref(),
+            e.tokens_in,
+            e.tokens_out,
+            e.cache_read,
+            e.cache_write,
+        );
         sqlx::query(
             "INSERT INTO usage_events \
              (id, user_id, conversation_id, project_id, engine, provider, model, \

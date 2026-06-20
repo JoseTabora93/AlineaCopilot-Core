@@ -13,8 +13,9 @@ use aionui_api_types::{
     CreateTempFileRequest, DirOrFileResponse, FetchRemoteImageRequest, FileChangeInfoResponse, FileMetadataResponse,
     FileWatchRequest, GetFileMetadataRequest, GetFilesByDirRequest, GetImageBase64Request, ListWorkspaceFilesRequest,
     MkdirRequest, ReadFileBufferRequest, ReadFileRequest, RemoveEntryRequest, RenameRequest, RenameResponse,
-    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse, SnapshotStageRequest,
-    SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest, WriteFileRequest, ZipRequest,
+    SnapshotBaselineRequest, SnapshotCompareResponse, SnapshotDiscardRequest, SnapshotInfoResponse,
+    SnapshotStageRequest, SnapshotWorkspaceRequest, WorkspaceFlatFileResponse, WorkspaceOfficeWatchRequest,
+    WriteFileRequest, ZipRequest,
 };
 use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
@@ -280,8 +281,7 @@ fn create_user_directory(user_root: &Path, relative_path: &str) -> Result<PathBu
     }
 
     // Ensure the sandbox root exists, then create the requested subtree.
-    std::fs::create_dir_all(user_root)
-        .map_err(|e| ApiError::Internal(format!("failed to create user root: {}", e)))?;
+    std::fs::create_dir_all(user_root).map_err(|e| ApiError::Internal(format!("failed to create user root: {}", e)))?;
     let target = user_root.join(relative);
     std::fs::create_dir_all(&target).map_err(|e| ApiError::Internal(format!("mkdir failed: {}", e)))?;
 

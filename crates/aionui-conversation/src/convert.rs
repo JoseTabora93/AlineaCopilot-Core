@@ -278,6 +278,7 @@ pub fn search_row_to_item(row: MessageSearchRow, data_dir: &Path) -> Result<Mess
     let conversation_row = ConversationRow {
         id: row.conversation_id,
         user_id: String::new(),
+        project_id: None,
         name: row.conversation_name,
         r#type: row.conversation_type,
         extra: row.conversation_extra,
@@ -317,6 +318,7 @@ mod tests {
         extra_json: &str,
     ) -> ConversationRow {
         ConversationRow {
+            project_id: None,
             id: "conv_1".into(),
             user_id: "user_1".into(),
             name: "Test".into(),
@@ -371,6 +373,7 @@ mod tests {
     #[test]
     fn row_to_response_invalid_extra_json() {
         let row = ConversationRow {
+            project_id: None,
             id: "conv_1".into(),
             user_id: "user_1".into(),
             name: "Test".into(),
@@ -467,6 +470,7 @@ mod tests {
     #[test]
     fn row_with_pinned_at() {
         let row = ConversationRow {
+            project_id: None,
             id: "conv_2".into(),
             user_id: "user_1".into(),
             name: "Pinned".into(),

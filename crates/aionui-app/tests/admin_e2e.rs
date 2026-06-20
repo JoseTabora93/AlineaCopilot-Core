@@ -19,11 +19,7 @@ const PW: &str = "StrongP@ss1";
 
 /// Crea+loguea un usuario y le asigna el rol `admin`.
 /// Devuelve `(session_token, csrf_token, user_id)`.
-async fn login_as_admin(
-    app: &mut axum::Router,
-    services: &AppServices,
-    username: &str,
-) -> (String, String, String) {
+async fn login_as_admin(app: &mut axum::Router, services: &AppServices, username: &str) -> (String, String, String) {
     let (token, csrf) = setup_and_login(app, services, username, PW).await;
     let user = services.user_repo.find_by_username(username).await.unwrap().unwrap();
     // auth_middleware recarga los roles por request, así que asignar aquí
@@ -130,7 +126,11 @@ async fn admin_can_assign_then_remove_role() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert!(
-        json["data"]["roles"].as_array().unwrap().iter().any(|r| r == "gerencia"),
+        json["data"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "gerencia"),
         "tras asignar, roles[] debe incluir gerencia"
     );
 
@@ -147,7 +147,11 @@ async fn admin_can_assign_then_remove_role() {
     assert_eq!(resp.status(), StatusCode::OK);
     let json = body_json(resp).await;
     assert!(
-        !json["data"]["roles"].as_array().unwrap().iter().any(|r| r == "gerencia"),
+        !json["data"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r == "gerencia"),
         "tras quitar, roles[] no debe incluir gerencia"
     );
 }

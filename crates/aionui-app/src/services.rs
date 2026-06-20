@@ -15,10 +15,11 @@ use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IUsageRepository, IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteUsageRepository,
+    IProjectRepository, IResourceAclRepository, ITaskRepository, IUsageRepository, IUserRepository,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
     SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
-    SqliteMcpServerRepository, SqliteProviderRepository, SqliteUserRepository,
+    SqliteMcpServerRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteResourceAclRepository,
+    SqliteTaskRepository, SqliteUsageRepository, SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;
@@ -31,6 +32,13 @@ pub struct AppServices {
     pub user_repo: Arc<dyn IUserRepository>,
     /// Ledger de consumos $ (Fase 2 #3).
     pub usage_repo: Arc<dyn IUsageRepository>,
+    /// Repositorio de proyectos (Fase 2 #2 — slice 3).
+    pub project_repo: Arc<dyn IProjectRepository>,
+    /// ACL de recursos (membresía de proyecto, eje 2). Lo consume el gate
+    /// fail-closed de `ConversationService::update`.
+    pub resource_acl_repo: Arc<dyn IResourceAclRepository>,
+    /// Tareas/subtareas de proyecto (Fase 2 #2 — slice 4).
+    pub task_repo: Arc<dyn ITaskRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -85,6 +93,7 @@ impl AppServices {
             conversation_repo: self.conversation_repo.clone(),
             user_repo: self.user_repo.clone(),
             usage_repo: self.usage_repo.clone(),
+            resource_acl_repo: self.resource_acl_repo.clone(),
             multiuser: self.enforce_file_scope,
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
         });
@@ -108,6 +117,10 @@ impl AppServices {
         let app_version = config.app_version.clone();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(database.pool().clone()));
         let usage_repo: Arc<dyn IUsageRepository> = Arc::new(SqliteUsageRepository::new(database.pool().clone()));
+        let project_repo: Arc<dyn IProjectRepository> = Arc::new(SqliteProjectRepository::new(database.pool().clone()));
+        let resource_acl_repo: Arc<dyn IResourceAclRepository> =
+            Arc::new(SqliteResourceAclRepository::new(database.pool().clone()));
+        let task_repo: Arc<dyn ITaskRepository> = Arc::new(SqliteTaskRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -240,6 +253,7 @@ impl AppServices {
             conversation_repo: conversation_repo.clone(),
             user_repo: user_repo.clone(),
             usage_repo: usage_repo.clone(),
+            resource_acl_repo: resource_acl_repo.clone(),
             multiuser: enforce_file_scope,
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
         });
@@ -249,6 +263,9 @@ impl AppServices {
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             user_repo,
             usage_repo,
+            project_repo,
+            resource_acl_repo,
+            task_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -284,6 +301,7 @@ struct ConversationServiceDeps<'a> {
     conversation_repo: Arc<dyn IConversationRepository>,
     user_repo: Arc<dyn IUserRepository>,
     usage_repo: Arc<dyn IUsageRepository>,
+    resource_acl_repo: Arc<dyn IResourceAclRepository>,
     multiuser: bool,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
 }
@@ -305,6 +323,7 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     .with_multiuser(deps.multiuser);
     service.with_user_repo(deps.user_repo);
     service.with_usage_repo(deps.usage_repo);
+    service.with_resource_acl_repo(deps.resource_acl_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),

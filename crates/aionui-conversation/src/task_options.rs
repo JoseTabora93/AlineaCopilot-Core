@@ -95,6 +95,7 @@ mod tests {
 
     fn row_with_model(model: Option<&str>) -> ConversationRow {
         ConversationRow {
+            project_id: None,
             id: "conv-1".into(),
             user_id: "user-1".into(),
             name: "test".into(),

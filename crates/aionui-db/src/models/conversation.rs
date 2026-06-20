@@ -27,6 +27,9 @@ pub struct ConversationRow {
     pub source: Option<String>,
     /// Channel isolation ID (e.g. "user:xxx", "group:xxx").
     pub channel_chat_id: Option<String>,
+    /// Proyecto al que pertenece la conversación (Fase 2 #2). `None` = sin proyecto.
+    /// Referencia el id del proyecto en el motor de PM (Paca) / workspace.
+    pub project_id: Option<String>,
     /// Whether this conversation is pinned (SQLite INTEGER 0/1).
     pub pinned: bool,
     pub pinned_at: Option<TimestampMs>,

@@ -2,6 +2,7 @@
 
 mod health;
 mod identity;
+mod projects;
 mod routes;
 mod state;
 mod team_conversation_adapters;

@@ -31,10 +31,11 @@ use aionui_db::models::{
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, DbError, IAcpSessionRepository,
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantPreferenceRepository, IConversationRepository, MessageRowUpdate, MessageSearchRow, PersistedSessionState,
-    SaveRuntimeStateParams, SortOrder, SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository,
-    SqliteAssistantPreferenceRepository, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
-    UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams, init_database_memory,
+    IAssistantPreferenceRepository, IConversationRepository, IResourceAclRepository, MessageRowUpdate,
+    MessageSearchRow, PersistedSessionState, SaveRuntimeStateParams, SortOrder, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteResourceAclRepository,
+    UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
+    UpsertConversationAssistantSnapshotParams, init_database_memory,
 };
 use aionui_extension::{AssistantRuleDispatcher, ExtensionError};
 use aionui_realtime::EventBroadcaster;
@@ -856,6 +857,7 @@ async fn insert_conversation_with_type(repo: &Arc<MockRepo>, user_id: &str, agen
         aionui_common::generate_short_id()
     );
     let row = ConversationRow {
+        project_id: None,
         id,
         user_id: user_id.to_owned(),
         name: format!("legacy {}", agent_type.serde_name()),
@@ -1166,6 +1168,43 @@ async fn update_name() {
     let events = broadcaster.take_events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data["action"], "updated");
+}
+
+// 🔒 Gate fail-closed de membresía de proyecto (Fase 2 #2).
+
+#[tokio::test]
+async fn update_project_without_acl_repo_is_fail_closed() {
+    // Sin `resource_acl_repo` wireado, asignar un proyecto se rechaza
+    // (fail-closed): no se puede verificar membresía → Forbidden.
+    let (svc, _b, _repo, task_mgr) = make_service();
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+    let req: UpdateConversationRequest = serde_json::from_value(json!({ "project_id": "proj_x" })).unwrap();
+    let err = svc.update("user_1", &conv.id, req, &task_mgr).await.unwrap_err();
+    assert!(matches!(err, ConversationError::Forbidden { .. }));
+}
+
+#[tokio::test]
+async fn update_project_member_ok_nonmember_forbidden() {
+    let db = init_database_memory().await.unwrap();
+    let acl_repo: Arc<dyn IResourceAclRepository> = Arc::new(SqliteResourceAclRepository::new(db.pool().clone()));
+    acl_repo
+        .grant("project", "proj_member", "user_1", "owner")
+        .await
+        .unwrap();
+
+    let (svc, _b, _repo, task_mgr) = make_service();
+    svc.with_resource_acl_repo(acl_repo);
+    let conv = svc.create("user_1", make_create_req()).await.unwrap();
+
+    // Miembro del proyecto → la asignación procede.
+    let ok_req: UpdateConversationRequest = serde_json::from_value(json!({ "project_id": "proj_member" })).unwrap();
+    assert!(svc.update("user_1", &conv.id, ok_req, &task_mgr).await.is_ok());
+
+    // Proyecto donde NO es miembro → Forbidden (no puede mintear un token con
+    // scope ajeno).
+    let bad_req: UpdateConversationRequest = serde_json::from_value(json!({ "project_id": "proj_foreign" })).unwrap();
+    let err = svc.update("user_1", &conv.id, bad_req, &task_mgr).await.unwrap_err();
+    assert!(matches!(err, ConversationError::Forbidden { .. }));
 }
 
 #[tokio::test]
@@ -2744,6 +2783,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
             "user_1",
             &auto_conv.id,
             UpdateConversationRequest {
+                project_id: None,
                 model: Some(ProviderWithModel {
                     provider_id: "provider-2".to_owned(),
                     model: "model-z".to_owned(),
@@ -2805,6 +2845,7 @@ async fn update_aionrs_model_updates_assistant_preference_only_when_snapshot_mod
             "user_1",
             &fixed_conv.id,
             UpdateConversationRequest {
+                project_id: None,
                 model: Some(ProviderWithModel {
                     provider_id: "provider-3".to_owned(),
                     model: "model-y".to_owned(),
@@ -4540,6 +4581,7 @@ async fn get_backfills_legacy_row_and_persists() {
     // Seed a legacy row directly via the repo — simulates a pre-migration
     // conversation that the service has never touched.
     let legacy_row = ConversationRow {
+        project_id: None,
         id: "legacy-1".into(),
         user_id: "user-1".into(),
         name: "legacy".into(),
@@ -4590,6 +4632,7 @@ async fn list_backfills_mixed_rows() {
 
     // Row 1: legacy (needs backfill).
     let legacy = ConversationRow {
+        project_id: None,
         id: "a".into(),
         user_id: "u".into(),
         name: "a".into(),
@@ -4610,6 +4653,7 @@ async fn list_backfills_mixed_rows() {
     };
     // Row 2: already migrated.
     let modern = ConversationRow {
+        project_id: None,
         id: "b".into(),
         user_id: "u".into(),
         name: "b".into(),

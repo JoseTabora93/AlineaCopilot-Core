@@ -70,6 +70,11 @@ pub struct UpdateConversationRequest {
     pub pinned: Option<bool>,
     pub model: Option<ProviderWithModel>,
     pub extra: Option<serde_json::Value>,
+    /// Asigna la conversación a un proyecto (Fase 2 #2). Presente = asigna ese
+    /// `project_id`; ausente o `null` = no se toca. **Slice 1: no se puede
+    /// DESASIGNAR vía API** (el repo sí lo soporta con `Some(None)`); exponerlo
+    /// como "mover fuera de proyecto" es un follow-up cuando se necesite.
+    pub project_id: Option<String>,
 }
 
 /// Body for `POST /api/conversations/clone`.
@@ -147,6 +152,8 @@ pub struct ListConversationsQuery {
     pub source: Option<String>,
     pub cron_job_id: Option<String>,
     pub pinned: Option<bool>,
+    /// Filtra por proyecto (Fase 2 #2): solo las conversaciones de ese proyecto.
+    pub project_id: Option<String>,
 }
 
 /// Query parameters for `GET /api/conversations/:id/messages`.

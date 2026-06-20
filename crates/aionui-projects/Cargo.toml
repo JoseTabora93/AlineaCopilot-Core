@@ -1,0 +1,13 @@
+[package]
+name = "aionui-projects"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+aionui-db.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

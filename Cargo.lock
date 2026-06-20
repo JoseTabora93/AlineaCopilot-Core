@@ -386,6 +386,7 @@ dependencies = [
  "aionui-file",
  "aionui-mcp",
  "aionui-office",
+ "aionui-projects",
  "aionui-realtime",
  "aionui-runtime",
  "aionui-shell",
@@ -709,6 +710,17 @@ dependencies = [
  "tokio",
  "tracing",
  "which 7.0.3",
+]
+
+[[package]]
+name = "aionui-projects"
+version = "0.1.29"
+dependencies = [
+ "aionui-db",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

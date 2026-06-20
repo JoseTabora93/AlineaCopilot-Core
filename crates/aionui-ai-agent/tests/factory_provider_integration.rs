@@ -90,6 +90,7 @@ fn make_aionrs_options(
 ) -> BuildTaskOptions {
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
+            project_id: None,
             conversation_id: conversation_id.to_owned(),
             user_id: "user-1".to_owned(),
             roles: vec![],

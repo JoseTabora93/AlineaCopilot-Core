@@ -20,6 +20,7 @@ members = [
     "crates/aionui-team",
     "crates/aionui-cron",
     "crates/aionui-assistant",
+    "crates/aionui-projects",
     "crates/aionui-app",
 ]
 
@@ -49,6 +50,7 @@ aionui-channel = { path = "crates/aionui-channel" }
 aionui-team = { path = "crates/aionui-team" }
 aionui-cron = { path = "crates/aionui-cron" }
 aionui-assistant = { path = "crates/aionui-assistant" }
+aionui-projects = { path = "crates/aionui-projects" }
 aionui-app = { path = "crates/aionui-app" }
 
 aion-agent = { git = "https://github.com/iOfficeAI/aionrs.git", tag = "v0.1.29" }
