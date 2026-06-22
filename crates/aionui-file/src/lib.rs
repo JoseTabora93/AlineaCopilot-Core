@@ -12,8 +12,8 @@ pub mod types;
 pub mod watch_service;
 
 pub use error::FileError;
-pub use path_safety::{has_traversal, validate_path, validate_path_for_write};
-pub use routes::{BrowseRoots, FileRouterState, file_routes};
+pub use path_safety::{enforce_user_scope, has_traversal, validate_path, validate_path_for_write};
+pub use routes::{BrowseRoots, FileRouterState, UserFileScope, file_routes};
 pub use service::FileService;
 pub use snapshot_service::SnapshotService;
 pub use traits::{

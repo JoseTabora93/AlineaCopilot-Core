@@ -13,7 +13,9 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use aionui_auth::{AuthRouterState, CookieConfig, JwtService, QrTokenStore, auth_routes, hash_password};
-use aionui_db::{ISettingsRepository, IUserRepository, SqliteSettingsRepository, SqliteUserRepository, init_database_memory};
+use aionui_db::{
+    ISettingsRepository, IUserRepository, SqliteSettingsRepository, SqliteUserRepository, init_database_memory,
+};
 
 // ---------------------------------------------------------------------------
 // Test helpers

@@ -18,7 +18,7 @@ use aionui_api_types::ErrorResponse;
 use aionui_assets::{AssetRouterState, asset_routes};
 use aionui_assistant::assistant_routes;
 use aionui_auth::{
-    AuthRouterState, AuthState, admin_routes, auth_middleware, auth_routes, csrf_middleware,
+    AuthRouterState, AuthState, CurrentUser, admin_routes, auth_middleware, auth_routes, csrf_middleware,
     security_headers_middleware,
 };
 use aionui_channel::channel_routes;
@@ -28,7 +28,7 @@ use aionui_conversation::{conversation_ops_routes, conversation_routes};
 use aionui_cron::cron_routes;
 use aionui_db::SqliteSettingsRepository;
 use aionui_extension::{extension_routes, hub_routes, skill_routes};
-use aionui_file::file_routes;
+use aionui_file::{UserFileScope, file_routes};
 use aionui_mcp::mcp_routes;
 use aionui_office::{office_proxy_routes, office_routes};
 use aionui_realtime::{WsHandlerState, ws_upgrade_handler};
@@ -39,6 +39,7 @@ use aionui_team::team_routes;
 use crate::services::AppServices;
 
 use super::health::{guide_mcp_status, health_check};
+use super::identity::identity_pubkey;
 use super::state::{ModuleStates, RouterBuildError, build_module_states, build_ws_state};
 use super::trace::with_access_log;
 
@@ -170,9 +171,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let connection_test_authenticated = connection_test_routes(states.connection_test)
         .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
-    // File routes protected by auth middleware
-    let file_authenticated =
-        file_routes(states.file).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    // File routes protected by auth middleware + per-user file-scope injection
+    // (Fase 2 #5). `inject_file_scope` runs AFTER auth (inner layer) so it can
+    // read `CurrentUser`; it computes the user's allowed subtree and inserts it
+    // as `UserFileScope` for the handlers' `enforce_user_scope` guard.
+    let file_scope_state = FileScopeState {
+        work_dir: services.work_dir.clone(),
+        enforce: services.enforce_file_scope,
+    };
+    let file_authenticated = file_routes(states.file)
+        .route_layer(from_fn_with_state(file_scope_state, inject_file_scope))
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
     // MCP routes protected by auth middleware
     let mcp_authenticated =
@@ -205,6 +214,32 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let cron_authenticated =
         cron_routes(states.cron).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Usage ledger routes (Fase 2 #3). `usage_routes` trae su propio gate
+    // `require_admin` en el subconjunto admin; aquí se añade `auth_middleware`
+    // (capa externa) para poblar `CurrentUser`.
+    let usage_authenticated = super::usage::usage_routes(super::usage::UsageRouterState {
+        usage_repo: services.usage_repo.clone(),
+    })
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Projects routes (Fase 2 #2 — slice 3). `auth_middleware` externo pobla
+    // `CurrentUser`; la autorización fina (membresía/owner vía resource_acl) vive
+    // en cada handler.
+    let handoff = aionui_projects::HandoffEngine::new(services.task_repo.clone());
+    let projects_authenticated = super::projects::project_routes(super::projects::ProjectRouterState {
+        project_repo: services.project_repo.clone(),
+        acl_repo: services.resource_acl_repo.clone(),
+        user_repo: services.user_repo.clone(),
+        task_repo: services.task_repo.clone(),
+        pipeline: aionui_projects::PipelineService::new(
+            services.project_repo.clone(),
+            services.task_repo.clone(),
+            handoff.clone(),
+        ),
+        handoff,
+    })
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office routes protected by auth middleware
     let office_authenticated =
         office_routes(states.office.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -223,6 +258,13 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .route("/api/system/guide-mcp", get(guide_mcp_status))
         .with_state(services.guide_mcp_config.clone())
         .route_layer(from_fn_with_state(auth_mw_state, auth_middleware));
+
+    // Identity public key — exempt from auth on purpose: a public key cannot
+    // forge tokens, and the agents (OpenClaw/Hermes) that verify signatures are
+    // not users, so they must read it without a session JWT (Fase 2 #5).
+    let identity_public = Router::new()
+        .route("/api/identity/pubkey", get(identity_pubkey))
+        .with_state(services.request_identity.clone());
 
     // Office proxy routes — exempt from auth (serve iframe content)
     let office_proxy = office_proxy_routes(states.office);
@@ -251,10 +293,13 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(channel_authenticated)
         .merge(team_authenticated)
         .merge(cron_authenticated)
+        .merge(usage_authenticated)
+        .merge(projects_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
-        .merge(guide_mcp_authenticated);
+        .merge(guide_mcp_authenticated)
+        .merge(identity_public);
 
     // Conditionally merge WeChat login SSE route (feature-gated)
     #[cfg(feature = "weixin")]
@@ -301,6 +346,46 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     } else {
         router
     }
+}
+
+#[derive(Clone)]
+struct FileScopeState {
+    work_dir: std::path::PathBuf,
+    enforce: bool,
+}
+
+/// Inserta `UserFileScope` (Fase 2 #5) leyendo `CurrentUser` (puesto por
+/// `auth_middleware`, que corre antes). En multiusuario (`!local`) el subárbol
+/// permitido es `{work_dir}/users/{user.id}`; en local queda `None` → sin
+/// restricción por-usuario (la sandbox global de `allowed_roots` sigue aplicando).
+async fn inject_file_scope(
+    axum::extract::State(cfg): axum::extract::State<FileScopeState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let scope = if !cfg.enforce {
+        // Sin segregación (desktop/dev): la sandbox global de allowed_roots aplica.
+        UserFileScope(None)
+    } else {
+        match request
+            .extensions()
+            .get::<CurrentUser>()
+            .filter(|u| !u.id.trim().is_empty())
+        {
+            Some(user) => {
+                let root = cfg.work_dir.join("users").join(&user.id);
+                // Crea el subárbol idempotentemente para que la 1ª op del usuario
+                // no falle por no existir el root (su canonicalize fallaría).
+                let _ = std::fs::create_dir_all(&root);
+                UserFileScope(Some(root))
+            }
+            // Fail-closed: con enforce activo y sin usuario válido, un subárbol
+            // inalcanzable → todos los /api/fs/* responden 403 (no fail-open).
+            None => UserFileScope(Some(cfg.work_dir.join("users").join("__deny_no_user__"))),
+        }
+    };
+    request.extensions_mut().insert(scope);
+    next.run(request).await
 }
 
 async fn normalize_boundary_error_response(request: Request, next: Next) -> Response {

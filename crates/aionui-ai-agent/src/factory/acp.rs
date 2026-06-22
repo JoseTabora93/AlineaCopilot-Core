@@ -9,6 +9,7 @@ use crate::manager::acp::{AcpAgentManager, CatalogForwarder};
 use crate::session_context::AcpSessionBuildContext;
 use agent_client_protocol::schema::{EnvVariable, HttpHeader, McpServer, McpServerHttp, McpServerSse, McpServerStdio};
 use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
+use aionui_auth::RequestIdentityService;
 use aionui_common::CommandSpec;
 use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
@@ -20,6 +21,86 @@ use aionui_runtime::{
 use tracing::{debug, info, warn};
 
 use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation_runtime_reporter};
+
+/// TTL del token de identidad inyectado al proceso del agente. El env se fija una
+/// sola vez en el spawn, así que debe cubrir la sesión; la re-emisión por turno
+/// queda como follow-up (Fase 2 #5).
+const IDENTITY_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000; // 12 h
+
+/// Emite un token de identidad firmado y lo inyecta (junto a la clave pública)
+/// en `env` para el proceso del agente. No-op si no hay servicio o `user_id`
+/// vacío/en blanco.
+///
+/// Toma `&FactoryContext` (no campos sueltos) a propósito: `user_id` y
+/// `conversation_id` son ambos `&str` y un orden de argumentos invertido pasaría
+/// desapercibido en compilación.
+///
+/// Contrato de los claims emitidos:
+/// - `project_id`: el **proyecto real** de la conversación (Fase 2 #2) cuando
+///   pertenece a uno; si no, cae a `conversation_id` como unidad mínima de
+///   aislamiento. El agente lo usa para acotar el scope (RAG por proyecto).
+/// - `scopes = []`: sin scopes adicionales; el consumidor debe tratarlo como
+///   deny-by-default, no como "sin restricción".
+///
+/// Si la emisión falla, deja un warn y continúa **sin** token (fail-open en el
+/// Core). La garantía fail-closed —denegar cuando falta `AION_IDENTITY_TOKEN`—
+/// es responsabilidad del agente (OpenClaw) y aún no está verificada extremo a
+/// extremo en este repo.
+fn inject_identity_env(
+    env: &mut Vec<aionui_common::EnvVar>,
+    request_identity: Option<&RequestIdentityService>,
+    ctx: &FactoryContext,
+    now_ms: i64,
+) {
+    let Some(ri) = request_identity else { return };
+    if ctx.user_id.trim().is_empty() {
+        return;
+    }
+    match ri.issue_for(
+        ctx.user_id.clone(),
+        ctx.roles.clone(),
+        // Proyecto real de la conversación (Fase 2 #2) o, si no tiene, la
+        // conversación como unidad mínima de aislamiento, **prefijada `conv:`**
+        // para que un consumidor de scope-por-proyecto nunca confunda un
+        // conversation_id con un project_id real (review de seguridad).
+        // 🔒 SEGURIDAD (Fase 2 #2 — slice 3, gate CERRADO): el `project_id` de la
+        // conversación solo pudo asignarse vía `ConversationService::update`, que
+        // YA valida membresía fail-closed contra `resource_acl` (rechaza con
+        // Forbidden a un no-miembro). Por eso el claim que viaja firmado aquí
+        // tiene scope legítimo: nunca puede portar un proyecto ajeno.
+        Some(
+            ctx.project_id
+                .clone()
+                .unwrap_or_else(|| format!("conv:{}", ctx.conversation_id)),
+        ),
+        Vec::new(),
+        now_ms,
+        IDENTITY_TOKEN_TTL_MS,
+    ) {
+        Ok(token) => {
+            env.push(aionui_common::EnvVar {
+                name: "AION_IDENTITY_TOKEN".to_owned(),
+                value: token,
+            });
+            env.push(aionui_common::EnvVar {
+                name: "AION_IDENTITY_PUBKEY".to_owned(),
+                value: ri.public_key_base64(),
+            });
+            debug!(
+                conversation_id = %ctx.conversation_id,
+                user_id = %ctx.user_id,
+                "identity: token injected into agent env"
+            );
+        }
+        Err(e) => {
+            warn!(
+                conversation_id = %ctx.conversation_id,
+                error = %e,
+                "identity: failed to issue token; agent runs without identity"
+            );
+        }
+    }
+}
 
 pub(super) async fn build(
     deps: Arc<AgentFactoryDeps>,
@@ -91,6 +172,18 @@ pub(super) async fn build(
             tracing::info!(?keys, "cc-switch: env vars injected");
         }
     }
+
+    // Identidad firmada por request (Fase 2 #5): token + pubkey en el env del
+    // proceso del agente. El env se fija una vez en el spawn; con TTL largo cubre
+    // la sesión (re-emisión por turno = follow-up). Ver `inject_identity_env`
+    // para el contrato de claims y la semántica fail-open/fail-closed.
+    inject_identity_env(
+        &mut command_spec.env,
+        deps.request_identity.as_deref(),
+        &ctx,
+        aionui_common::now_ms(),
+    );
+
     let session_snapshot = build_context.session_snapshot;
 
     // Load user-configured MCP servers from the DB so they reach
@@ -538,6 +631,83 @@ mod tests {
     use aionui_runtime::init as init_runtime;
     use std::sync::OnceLock;
     use std::{mem, path::PathBuf};
+
+    fn ctx_for(user_id: &str, roles: Vec<String>, conversation_id: &str) -> FactoryContext {
+        FactoryContext {
+            project_id: None,
+            conversation_id: conversation_id.to_owned(),
+            user_id: user_id.to_owned(),
+            roles,
+            workspace: "/tmp/ws".to_owned(),
+            is_custom_workspace: false,
+        }
+    }
+
+    // Fase 2 #2: con proyecto real, el token de identidad lleva ese project_id
+    // (no el conversation_id de fallback).
+    #[test]
+    fn identity_token_carries_real_project_id() {
+        let ri = RequestIdentityService::from_seed([9u8; 32]);
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let now = 1_000_000;
+        let ctx = FactoryContext {
+            project_id: Some("proj_dc".to_string()),
+            conversation_id: "conv-1".to_owned(),
+            user_id: "user-1".to_owned(),
+            roles: vec!["tecnica".to_string()],
+            workspace: "/tmp/ws".to_owned(),
+            is_custom_workspace: false,
+        };
+        inject_identity_env(&mut env, Some(&ri), &ctx, now);
+        let tok = env.iter().find(|e| e.name == "AION_IDENTITY_TOKEN").expect("token");
+        let claims = ri.verify(&tok.value, now + 1000).unwrap();
+        assert_eq!(claims.project_id.as_deref(), Some("proj_dc"));
+    }
+
+    #[test]
+    fn injects_verifiable_identity_token() {
+        let ri = RequestIdentityService::from_seed([7u8; 32]);
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let now = 1_000_000;
+        inject_identity_env(
+            &mut env,
+            Some(&ri),
+            &ctx_for("user-1", vec!["ingenieria".to_string()], "conv-1"),
+            now,
+        );
+
+        let tok = env
+            .iter()
+            .find(|e| e.name == "AION_IDENTITY_TOKEN")
+            .expect("token present");
+        let claims = ri.verify(&tok.value, now + 1000).unwrap();
+        assert_eq!(claims.user_id, "user-1");
+        assert_eq!(claims.roles, vec!["ingenieria".to_string()]);
+        // Sin proyecto → fallback prefijado para no colisionar con un project_id real.
+        assert_eq!(claims.project_id.as_deref(), Some("conv:conv-1"));
+        assert_eq!(claims.scopes, Vec::<String>::new());
+        assert!(!claims.jti.is_empty());
+        assert!(
+            env.iter()
+                .any(|e| e.name == "AION_IDENTITY_PUBKEY" && e.value == ri.public_key_base64())
+        );
+    }
+
+    #[test]
+    fn no_identity_token_without_user_id() {
+        let ri = RequestIdentityService::from_seed([7u8; 32]);
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        // user_id en blanco (solo espacios) tampoco emite (guard con trim).
+        inject_identity_env(&mut env, Some(&ri), &ctx_for("   ", vec![], "conv-1"), 1_000);
+        assert!(env.is_empty());
+    }
+
+    #[test]
+    fn no_identity_token_without_service() {
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        inject_identity_env(&mut env, None, &ctx_for("user-1", vec![], "conv-1"), 1_000);
+        assert!(env.is_empty());
+    }
 
     fn make_row(
         name: &str,

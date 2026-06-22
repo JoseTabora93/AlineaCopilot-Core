@@ -66,10 +66,18 @@ pub fn cron_routes(state: CronRouterState) -> Router {
 
 async fn create_job(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     body: Result<Json<CreateCronJobRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<ApiResponse<CronJobResponse>>), ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    // Impide enlazar el job a la conversación de otro usuario (write-IDOR).
+    if !state
+        .cron_service
+        .user_owns_conversation(&user.id, &req.conversation_id)
+        .await?
+    {
+        return Err(ApiError::Forbidden("conversation not owned by user".into()));
+    }
     let job = state.cron_service.add_job(req).await?;
     let resp = CronService::to_response(&job);
     Ok((StatusCode::CREATED, Json(ApiResponse::ok(resp))))
@@ -77,48 +85,52 @@ async fn create_job(
 
 async fn list_jobs(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Query(query): Query<ListCronJobsQuery>,
 ) -> Result<Json<ApiResponse<Vec<CronJobResponse>>>, ApiError> {
-    let jobs = state.cron_service.list_jobs(&query).await?;
+    let jobs = state.cron_service.list_jobs_for_user(&user.id, &query).await?;
     let items: Vec<CronJobResponse> = jobs.iter().map(CronService::to_response).collect();
     Ok(Json(ApiResponse::ok(items)))
 }
 
 async fn get_job(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<CronJobResponse>>, ApiError> {
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     let job = state.cron_service.get_job(&id).await?;
     Ok(Json(ApiResponse::ok(CronService::to_response(&job))))
 }
 
 async fn update_job(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     body: Result<Json<UpdateCronJobRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<CronJobResponse>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     let job = state.cron_service.update_job(&id, req).await?;
     Ok(Json(ApiResponse::ok(CronService::to_response(&job))))
 }
 
 async fn delete_job(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     state.cron_service.remove_job(&id).await?;
     Ok(Json(ApiResponse::success()))
 }
 
 async fn run_now(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<RunNowResponse>>, ApiError> {
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     let resp = state.cron_service.run_now(&id).await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
@@ -138,11 +150,12 @@ async fn system_resume(
 
 async fn save_skill(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
     body: Result<Json<SaveCronSkillRequest>, JsonRejection>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     state.cron_service.save_skill(&id, req).await?;
     Ok(Json(ApiResponse::success()))
 }
@@ -152,24 +165,29 @@ async fn list_conversations_by_cron_job(
     Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<ConversationResponse>>>, ApiError> {
+    // Autorización implícita: `list_by_cron_job` filtra en SQL por `user_id`, así
+    // que un job_id ajeno devuelve lista vacía (no revela existencia). No tocar
+    // ese filtro sin añadir aquí un ensure_owner explícito (Fase 2 #5).
     let items = state.conversation_service.list_by_cron_job(&user.id, &id).await?;
     Ok(Json(ApiResponse::ok(items)))
 }
 
 async fn has_skill(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<HasSkillResponse>>, ApiError> {
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     let resp = state.cron_service.has_skill(&id).await?;
     Ok(Json(ApiResponse::ok(resp)))
 }
 
 async fn delete_skill(
     State(state): State<CronRouterState>,
-    Extension(_user): Extension<CurrentUser>,
+    Extension(user): Extension<CurrentUser>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
+    state.cron_service.ensure_owner(&user.id, &id).await?;
     state.cron_service.delete_skill(&id).await?;
     Ok(Json(ApiResponse::success()))
 }

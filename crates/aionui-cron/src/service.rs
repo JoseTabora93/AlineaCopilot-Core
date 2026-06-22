@@ -37,6 +37,10 @@ const PLACEHOLDER_PATTERNS: &[&str] = &[
 ];
 const DEPRECATED_AGENT_TYPE_MESSAGE: &str = "This agent type is no longer supported for new conversations.";
 
+/// Dueño por defecto cuando un job no tiene conversación con dueño (espeja la
+/// resolución del executor). Usado por el guard de ownership (Fase 2 #5).
+const SYSTEM_DEFAULT_USER_ID: &str = "system_default_user";
+
 #[derive(Clone)]
 pub struct CronService {
     repo: Arc<dyn ICronRepository>,
@@ -227,6 +231,72 @@ impl CronService {
         };
 
         rows.into_iter().map(cron_job_from_row).collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Ownership (segregación multiusuario — Fase 2 #5, IDOR)
+    // -----------------------------------------------------------------------
+
+    /// Dueño efectivo de un job para autorización: el `user_id` de su
+    /// conversación, o `system_default_user` si no tiene conversación con dueño.
+    /// `created_by` viene del request del cliente y NO sirve para authz.
+    async fn job_owner_user_id(&self, job: &CronJob) -> Result<String, CronError> {
+        if !job.conversation_id.trim().is_empty()
+            && let Some(row) = self.executor.get_conversation_row(&job.conversation_id).await?
+            && !row.user_id.trim().is_empty()
+        {
+            return Ok(row.user_id);
+        }
+        Ok(SYSTEM_DEFAULT_USER_ID.to_owned())
+    }
+
+    /// Verifica que `user_id` es dueño del job. Devuelve `JobNotFound` —sin
+    /// revelar existencia— si no lo es. Las rutas HTTP lo llaman antes de operar
+    /// sobre un job por id (cierra el IDOR: antes cualquier usuario autenticado
+    /// podía get/update/delete/run cualquier job ajeno).
+    pub async fn ensure_owner(&self, user_id: &str, job_id: &str) -> Result<(), CronError> {
+        let job = self.get_job(job_id).await?;
+        if self.job_owner_user_id(&job).await? == user_id {
+            Ok(())
+        } else {
+            Err(CronError::JobNotFound(job_id.to_owned()))
+        }
+    }
+
+    /// `true` si `user_id` puede crear un job ligado a `conversation_id`. Impide
+    /// enlazar un job a la conversación de OTRO usuario (write-IDOR). Se permite
+    /// cuando la conversación está vacía o aún no existe (el job la auto-provisiona
+    /// bajo el creador); se deniega **solo** si existe y pertenece a otro.
+    pub async fn user_owns_conversation(&self, user_id: &str, conversation_id: &str) -> Result<bool, CronError> {
+        if conversation_id.trim().is_empty() {
+            return Ok(true);
+        }
+        let owner = self
+            .executor
+            .get_conversation_row(conversation_id)
+            .await?
+            .map(|r| r.user_id)
+            .filter(|u| !u.trim().is_empty());
+        Ok(match owner {
+            Some(o) => o == user_id,
+            None => true,
+        })
+    }
+
+    /// Como [`list_jobs`](Self::list_jobs) pero solo los jobs que `user_id` posee.
+    pub async fn list_jobs_for_user(
+        &self,
+        user_id: &str,
+        query: &ListCronJobsQuery,
+    ) -> Result<Vec<CronJob>, CronError> {
+        let jobs = self.list_jobs(query).await?;
+        let mut owned = Vec::with_capacity(jobs.len());
+        for job in jobs {
+            if self.job_owner_user_id(&job).await? == user_id {
+                owned.push(job);
+            }
+        }
+        Ok(owned)
     }
 
     // -----------------------------------------------------------------------

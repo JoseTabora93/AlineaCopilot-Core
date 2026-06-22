@@ -190,7 +190,7 @@ impl IWorkerTaskManager for MockTaskManager {
 
 async fn build_app_with_mock_tasks() -> (axum::Router, aionui_app::AppServices, Arc<MockTaskManager>) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = aionui_app::AppServices::from_config(db, &aionui_app::AppConfig::default())
+    let services = aionui_app::AppServices::from_config(db, &common::isolated_config())
         .await
         .unwrap();
 

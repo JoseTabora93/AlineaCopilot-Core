@@ -9,7 +9,7 @@ use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use aionui_app::{AppConfig, AppServices};
+use aionui_app::AppServices;
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -17,7 +17,7 @@ use aionui_app::{AppConfig, AppServices};
 
 async fn build_app() -> (axum::Router, AppServices) {
     let db = aionui_db::init_database_memory().await.unwrap();
-    let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+    let services = AppServices::from_config(db, &common::isolated_config()).await.unwrap();
     let router = aionui_app::create_router(&services).await.expect("build router");
     (router, services)
 }
@@ -447,3 +447,5 @@ async fn csrf_cookie_set_on_first_get() {
     assert!(csrf.is_some(), "CSRF cookie should be set on first request");
     assert_eq!(csrf.unwrap().len(), 64, "CSRF token should be 64 hex chars");
 }
+
+mod common;

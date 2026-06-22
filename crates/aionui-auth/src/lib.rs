@@ -5,7 +5,9 @@ mod cookie;
 mod csrf;
 mod error;
 mod extract;
+pub mod identity;
 mod jwt;
+pub mod keystore;
 pub mod middleware;
 mod password;
 pub mod qr_token;
@@ -19,6 +21,12 @@ pub use error::AuthError;
 
 // JWT service
 pub use jwt::{JwtService, TokenPayload, generate_random_secret_string, resolve_jwt_secret};
+
+// Request-identity (Ed25519 signed token per agent request — Fase 2 #5)
+pub use identity::{IdentityClaims, IdentityError, RequestIdentityService};
+
+// Keystore de identidad (semilla Ed25519 cifrada en reposo — Fase 2 #5 §5.3)
+pub use keystore::{KeystoreError, load_or_create_identity};
 
 // Password service
 pub use password::{

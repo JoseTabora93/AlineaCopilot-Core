@@ -8,7 +8,7 @@ use axum::extract::{Json, Path, State};
 use axum::http::{HeaderMap, header};
 use axum::middleware::from_fn_with_state;
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Extension, Router};
 use serde::Deserialize;
 
@@ -20,7 +20,10 @@ use aionui_api_types::{
 };
 use aionui_common::ApiError;
 use aionui_common::constants::COOKIE_MAX_AGE_DAYS;
-use aionui_db::{DbError, ISettingsRepository, IUserRepository, models::User};
+use aionui_db::{
+    DbError, ISettingsRepository, IUserRepository, RoleRemoval,
+    models::{Role, User},
+};
 
 use crate::error::AuthError;
 use crate::extract::extract_token_from_headers;
@@ -848,17 +851,60 @@ async fn webui_generate_qr_token_handler(
 // Admin user management routes
 // ---------------------------------------------------------------------------
 
+/// Id del rol con privilegios de administración (catálogo de la migración 014).
+const ADMIN_ROLE: &str = "admin";
+
+/// Vista admin de un usuario con el set **multi-rol** completo (RBAC eje 1).
+///
+/// `roles` es la fuente de verdad (tabla `user_roles`); el `PublicUser.role`
+/// legado se conserva solo para login/userinfo. No expone `password_hash`/`jwt_secret`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AdminUser {
+    id: String,
+    username: String,
+    email: Option<String>,
+    roles: Vec<String>,
+    is_active: bool,
+    display_name: Option<String>,
+    created_at: aionui_common::TimestampMs,
+    last_login: Option<aionui_common::TimestampMs>,
+}
+
+/// Cuerpo de `POST /api/admin/users/{id}/roles`.
+#[derive(Debug, serde::Deserialize)]
+struct AdminAssignRoleRequest {
+    role: String,
+}
+
+/// Construye un [`AdminUser`] cargando sus roles de `user_roles`.
+async fn admin_user_view(repo: &dyn IUserRepository, user: User) -> Result<AdminUser, ApiError> {
+    let roles = repo.get_user_roles(&user.id).await.map_err(db_error_to_api_error)?;
+    Ok(AdminUser {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        roles,
+        is_active: user.is_active,
+        display_name: user.display_name,
+        created_at: user.created_at,
+        last_login: user.last_login,
+    })
+}
+
 /// Build the admin user management router.
 ///
 /// All routes require authentication AND the `"admin"` role.
 /// Mount this router alongside `auth_routes` in the top-level router.
 ///
 /// Endpoints:
-/// - `GET    /api/admin/users`                    — list all users
+/// - `GET    /api/admin/users`                    — list all users (con `roles[]`)
 /// - `POST   /api/admin/users`                    — create user (invite-only path)
-/// - `PATCH  /api/admin/users/{id}`                — update role / is_active / display_name
-/// - `DELETE /api/admin/users/{id}`                — permanently delete a user
+/// - `PATCH  /api/admin/users/{id}`                — update is_active / display_name / role
+/// - `DELETE /api/admin/users/{id}`                — permanently delete a user (anti-lockout)
 /// - `POST   /api/admin/users/{id}/reset-password` — admin force-resets a password
+/// - `GET    /api/admin/roles`                     — catálogo de roles (multi-rol)
+/// - `POST   /api/admin/users/{id}/roles`          — asignar un rol `{ "role": "..." }`
+/// - `DELETE /api/admin/users/{id}/roles/{role}`   — quitar un rol (anti-lockout)
 pub fn admin_routes(state: AuthRouterState) -> Router {
     let api_limiter = Arc::new(RateLimiter::api());
     let action_limiter = Arc::new(RateLimiter::authenticated_action());
@@ -886,6 +932,10 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
             "/api/admin/users/{id}/reset-password",
             post(admin_reset_password_handler),
         )
+        // Multi-rol (RBAC eje 1): catálogo + asignar/quitar roles.
+        .route("/api/admin/roles", get(admin_list_roles_handler))
+        .route("/api/admin/users/{id}/roles", post(admin_assign_role_handler))
+        .route("/api/admin/users/{id}/roles/{role}", delete(admin_remove_role_handler))
         // require_admin runs inside auth — layers apply outermost-last
         .route_layer(axum::middleware::from_fn(require_admin_middleware))
         .route_layer(from_fn_with_state(auth_state, auth_middleware))
@@ -899,27 +949,22 @@ pub fn admin_routes(state: AuthRouterState) -> Router {
 
 async fn admin_list_users_handler(
     State(state): State<AuthRouterState>,
-) -> Result<Json<ApiResponse<Vec<PublicUser>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<AdminUser>>>, ApiError> {
     let users = state.user_repo.list_users().await.map_err(db_error_to_api_error)?;
 
-    let public: Vec<PublicUser> = users
-        .into_iter()
-        .map(|u| PublicUser {
-            id: u.id,
-            username: u.username,
-            role: u.role,
-            is_active: u.is_active,
-            display_name: u.display_name,
-        })
-        .collect();
+    // N+1 aceptable: el panel admin tiene pocos usuarios y no es hot-path.
+    let mut out = Vec::with_capacity(users.len());
+    for u in users {
+        out.push(admin_user_view(state.user_repo.as_ref(), u).await?);
+    }
 
-    Ok(Json(ApiResponse::ok(public)))
+    Ok(Json(ApiResponse::ok(out)))
 }
 
 async fn admin_create_user_handler(
     State(state): State<AuthRouterState>,
     body: Result<Json<AdminCreateUserRequest>, JsonRejection>,
-) -> Result<Json<ApiResponse<PublicUser>>, ApiError> {
+) -> Result<Json<ApiResponse<AdminUser>>, ApiError> {
     let Json(req) = body.map_err(ApiError::from)?;
 
     let trimmed = req.username.trim().to_owned();
@@ -944,13 +989,18 @@ async fn admin_create_user_handler(
         .await
         .map_err(db_error_to_api_error)?;
 
-    Ok(Json(ApiResponse::ok(PublicUser {
-        id: user.id,
-        username: user.username,
-        role: user.role,
-        is_active: user.is_active,
-        display_name: user.display_name,
-    })))
+    // Multi-rol: si se crea como admin, materializa el rol en `user_roles` (la
+    // columna `users.role` por sí sola no cuenta para el gate multi-rol).
+    if role == ADMIN_ROLE {
+        state
+            .user_repo
+            .assign_role(&user.id, ADMIN_ROLE)
+            .await
+            .map_err(db_error_to_api_error)?;
+    }
+
+    let view = admin_user_view(state.user_repo.as_ref(), user).await?;
+    Ok(Json(ApiResponse::ok(view)))
 }
 
 async fn admin_update_user_handler(
@@ -977,11 +1027,36 @@ async fn admin_update_user_handler(
                 "Invalid role '{role}': must be 'admin' or 'member'"
             )));
         }
+        // Sincroniza la columna legada `users.role` (login/userinfo)…
         state
             .user_repo
             .set_role(&id, role)
             .await
             .map_err(db_error_to_api_error)?;
+        // …y materializa el cambio admin/member en `user_roles` (fuente de verdad
+        // multi-rol). Quitar admin respeta la invariante anti-lockout.
+        match role.as_str() {
+            ADMIN_ROLE => {
+                state
+                    .user_repo
+                    .assign_role(&id, ADMIN_ROLE)
+                    .await
+                    .map_err(db_error_to_api_error)?;
+            }
+            _ => {
+                if state
+                    .user_repo
+                    .remove_role(&id, ADMIN_ROLE)
+                    .await
+                    .map_err(db_error_to_api_error)?
+                    == RoleRemoval::WouldLeaveNoAdmins
+                {
+                    return Err(ApiError::Conflict(
+                        "No puedes quitar el último rol admin del sistema".into(),
+                    ));
+                }
+            }
+        }
     }
 
     if let Some(is_active) = req.is_active {
@@ -1029,11 +1104,28 @@ async fn admin_delete_user_handler(
         return Err(ApiError::BadRequest("Cannot delete the system default user".into()));
     }
 
-    state
+    // Anti-lockout: borrar a un usuario cascada sus filas de `user_roles`
+    // (FK ON DELETE CASCADE). Si fuese el último admin, el sistema quedaría sin
+    // administradores por esta vía. Se bloquea con 409 (multi-rol — Fase 2 #5).
+    let target_roles = state
         .user_repo
-        .delete_user(&id)
+        .get_user_roles(&id)
         .await
         .map_err(db_error_to_api_error)?;
+    if target_roles.iter().any(|r| r == ADMIN_ROLE) {
+        let total_admins = state
+            .user_repo
+            .count_users_with_role(ADMIN_ROLE)
+            .await
+            .map_err(db_error_to_api_error)?;
+        if total_admins <= 1 {
+            return Err(ApiError::Conflict(
+                "No puedes borrar al último administrador del sistema".into(),
+            ));
+        }
+    }
+
+    state.user_repo.delete_user(&id).await.map_err(db_error_to_api_error)?;
 
     Ok(Json(ApiResponse::message("User deleted successfully")))
 }
@@ -1059,6 +1151,77 @@ async fn admin_reset_password_handler(
         .map_err(db_error_to_api_error)?;
 
     Ok(Json(ApiResponse::message("Password reset successfully")))
+}
+
+// ---------------------------------------------------------------------------
+// Multi-rol (RBAC eje 1): catálogo + asignar/quitar roles
+// ---------------------------------------------------------------------------
+
+/// `GET /api/admin/roles` — catálogo de roles (fuente de verdad para la UI).
+async fn admin_list_roles_handler(
+    State(state): State<AuthRouterState>,
+) -> Result<Json<ApiResponse<Vec<Role>>>, ApiError> {
+    let roles = state.user_repo.list_roles().await.map_err(db_error_to_api_error)?;
+    Ok(Json(ApiResponse::ok(roles)))
+}
+
+/// `POST /api/admin/users/{id}/roles` con `{ "role": "gerencia" }`.
+/// Idempotente. 404 si el usuario no existe; 400 si el rol no está en el catálogo.
+async fn admin_assign_role_handler(
+    State(state): State<AuthRouterState>,
+    Path(user_id): Path<String>,
+    body: Result<Json<AdminAssignRoleRequest>, JsonRejection>,
+) -> Result<Json<ApiResponse<AdminUser>>, ApiError> {
+    let Json(req) = body.map_err(ApiError::from)?;
+    let role = req.role.trim();
+    if role.is_empty() {
+        return Err(ApiError::BadRequest("role must not be empty".into()));
+    }
+    let user = state
+        .user_repo
+        .find_by_id(&user_id)
+        .await
+        .map_err(db_error_to_api_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{user_id}' not found")))?;
+    // Valida contra el catálogo (400 limpio en lugar de un 500 por violación de FK).
+    let known = state.user_repo.list_roles().await.map_err(db_error_to_api_error)?;
+    if !known.iter().any(|r| r.id == role) {
+        return Err(ApiError::BadRequest(format!("Unknown role '{role}'")));
+    }
+    state
+        .user_repo
+        .assign_role(&user_id, role)
+        .await
+        .map_err(db_error_to_api_error)?;
+    let view = admin_user_view(state.user_repo.as_ref(), user).await?;
+    Ok(Json(ApiResponse::ok(view)))
+}
+
+/// `DELETE /api/admin/users/{id}/roles/{role}`. Idempotente. 404 si el usuario
+/// no existe. Invariante anti-lockout: quitar el último admin se bloquea con 409.
+async fn admin_remove_role_handler(
+    State(state): State<AuthRouterState>,
+    Path((user_id, role)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<AdminUser>>, ApiError> {
+    let user = state
+        .user_repo
+        .find_by_id(&user_id)
+        .await
+        .map_err(db_error_to_api_error)?
+        .ok_or_else(|| ApiError::NotFound(format!("User '{user_id}' not found")))?;
+    if state
+        .user_repo
+        .remove_role(&user_id, &role)
+        .await
+        .map_err(db_error_to_api_error)?
+        == RoleRemoval::WouldLeaveNoAdmins
+    {
+        return Err(ApiError::Conflict(
+            "No puedes quitar el último rol admin del sistema".into(),
+        ));
+    }
+    let view = admin_user_view(state.user_repo.as_ref(), user).await?;
+    Ok(Json(ApiResponse::ok(view)))
 }
 
 // ---------------------------------------------------------------------------

@@ -289,8 +289,10 @@ mod tests {
     fn make_options(conversation_id: &str) -> BuildTaskOptions {
         BuildTaskOptions::new(AgentSessionContext {
             conversation: ConversationContext {
+                project_id: None,
                 conversation_id: conversation_id.into(),
                 user_id: "user-1".into(),
+                roles: vec![],
                 agent_type: AgentType::Acp,
                 source: None,
             },

@@ -22,14 +22,14 @@ pub struct CurrentUser {
     pub id: String,
     /// Login username.
     pub username: String,
-    /// RBAC role. Known values: `"admin"`, `"member"`.
-    pub role: String,
+    /// Role ids del usuario (RBAC eje 1, multi-rol). Vacío si no tiene roles.
+    pub roles: Vec<String>,
 }
 
 impl CurrentUser {
-    /// Returns `true` if this user has the `"admin"` role.
+    /// Returns `true` if this user has the `"admin"` role (RBAC eje 1, multi-rol).
     pub fn is_admin(&self) -> bool {
-        self.role == "admin"
+        self.roles.iter().any(|r| r == "admin")
     }
 }
 
@@ -64,7 +64,7 @@ pub async fn auth_middleware(
         request.extensions_mut().insert(CurrentUser {
             id: "system_default_user".to_string(),
             username: "system_default_user".to_string(),
-            role: "admin".to_string(),
+            roles: vec!["admin".to_string()],
         });
         return Ok(next.run(request).await);
     }
@@ -87,14 +87,18 @@ pub async fn auth_middleware(
         })?
         .ok_or_else(|| ApiError::Unauthorized("Invalid authentication subject".into()))?;
 
+    // Rechaza cuentas desactivadas (soft offboarding) antes de poblar el usuario.
     if !user.is_active {
         return Err(ApiError::Forbidden("Account is deactivated".into()));
     }
 
+    // RBAC eje 1: cargar los roles del usuario (no fatal si falla -> sin roles).
+    let roles = state.user_repo.get_user_roles(&user.id).await.unwrap_or_default();
+
     request.extensions_mut().insert(CurrentUser {
         id: user.id,
         username: user.username,
-        role: user.role,
+        roles,
     });
 
     Ok(next.run(request).await)
@@ -128,7 +132,7 @@ pub async fn local_auth_middleware(mut request: Request, next: Next) -> Response
     request.extensions_mut().insert(CurrentUser {
         id: "system_default_user".to_string(),
         username: "system_default_user".to_string(),
-        role: "admin".to_string(),
+        roles: vec!["admin".to_string()],
     });
     next.run(request).await
 }
@@ -144,7 +148,7 @@ mod tests {
 
     async fn echo_user(request: Request<Body>) -> String {
         let user = request.extensions().get::<CurrentUser>().unwrap();
-        format!("{}:{}:{}", user.id, user.username, user.role)
+        format!("{}:{}:{}", user.id, user.username, user.roles.join(","))
     }
 
     #[tokio::test]
@@ -181,7 +185,7 @@ mod tests {
                     req.extensions_mut().insert(CurrentUser {
                         id: "user_1".to_string(),
                         username: "member_user".to_string(),
-                        role: "member".to_string(),
+                        roles: vec![],
                     });
                     next.run(req).await
                 },
@@ -209,7 +213,7 @@ mod tests {
                     req.extensions_mut().insert(CurrentUser {
                         id: "user_1".to_string(),
                         username: "admin_user".to_string(),
-                        role: "admin".to_string(),
+                        roles: vec!["admin".to_string()],
                     });
                     next.run(req).await
                 },

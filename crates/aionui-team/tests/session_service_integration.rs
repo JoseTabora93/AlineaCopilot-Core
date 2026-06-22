@@ -241,6 +241,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         let now = aionui_common::now_ms();
         self.repo
             .create(&ConversationRow {
+                project_id: None,
                 id: id.clone(),
                 user_id: request.user_id,
                 name: request.name,
@@ -269,6 +270,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .update(
                 &request.conversation_id,
                 &ConversationRowUpdate {
+                    project_id: None,
                     name: None,
                     model: None,
                     pinned: None,
@@ -307,6 +309,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .update(
                 conversation_id,
                 &ConversationRowUpdate {
+                    project_id: None,
                     name: None,
                     model: None,
                     pinned: None,
@@ -359,8 +362,10 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
             .to_owned();
         let context = AgentSessionContext {
             conversation: ConversationContext {
+                project_id: None,
                 conversation_id: row.id.clone(),
                 user_id: row.user_id,
+                roles: vec![],
                 agent_type: AgentType::Acp,
                 source: row.source,
             },
@@ -864,8 +869,10 @@ fn confirmations_factory(count: usize) -> AgentFactory {
 fn test_acp_build_options(conversation_id: String, workspace: String) -> BuildTaskOptions {
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
+            project_id: None,
             conversation_id,
             user_id: "user1".into(),
+            roles: vec![],
             agent_type: aionui_common::AgentType::Acp,
             source: None,
         },

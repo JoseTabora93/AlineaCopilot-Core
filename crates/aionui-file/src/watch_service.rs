@@ -174,19 +174,42 @@ impl crate::traits::IFileWatchService for FileWatchService {
         Ok(())
     }
 
-    async fn stop_all_watches(&self) -> Result<(), FileError> {
+    async fn stop_all_watches(&self, under: Option<&Path>) -> Result<(), FileError> {
         let mut watcher = self
             .file_watcher
             .lock()
             .map_err(|e| FileError::Internal(format!("file watcher lock poisoned: {e}")))?;
 
+        // En multiusuario limita la limpieza al subárbol del usuario (Fase 2 #5).
+        // Si el root no existe, el usuario no tiene watchers → no limpia nada
+        // (fail-closed: no borra los de otros).
+        let scope_root = match under {
+            Some(p) => match std::fs::canonicalize(p) {
+                Ok(c) => Some(c),
+                Err(_) => return Ok(()),
+            },
+            None => None,
+        };
+
+        let mut to_remove = Vec::new();
         for entry in self.watched_files.iter() {
             let path = std::path::PathBuf::from(entry.key().as_str());
+            if let Some(root) = &scope_root
+                && !path.starts_with(root)
+            {
+                continue;
+            }
             let _ = watcher.unwatch(&path);
+            to_remove.push(entry.key().clone());
         }
-        self.watched_files.clear();
-        // Clean file-watch debounce entries only (keep office ones).
-        self.debounce.retain(|k, _| k.starts_with("office:"));
+        for key in &to_remove {
+            self.watched_files.remove(key);
+            self.debounce.remove(key);
+        }
+        // Solo al limpiar todo (None) se purga el debounce de file-watch global.
+        if under.is_none() {
+            self.debounce.retain(|k, _| k.starts_with("office:"));
+        }
         Ok(())
     }
 

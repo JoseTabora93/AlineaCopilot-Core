@@ -208,6 +208,8 @@ pub struct ConversationFilters {
     pub cron_job_id: Option<String>,
     /// Filter by pinned status.
     pub pinned: Option<bool>,
+    /// Filtra por proyecto (Fase 2 #2). `Some(id)` = solo las de ese proyecto.
+    pub project_id: Option<String>,
 }
 
 impl ConversationFilters {
@@ -228,6 +230,9 @@ pub struct ConversationRowUpdate {
     pub extra: Option<String>,
     pub status: Option<String>,
     pub updated_at: Option<TimestampMs>,
+    /// Asigna/limpia el proyecto (Fase 2 #2). `Some(Some(id))` asigna,
+    /// `Some(None)` lo quita, `None` no toca el valor.
+    pub project_id: Option<Option<String>>,
 }
 
 /// Partial update payload for a message row.

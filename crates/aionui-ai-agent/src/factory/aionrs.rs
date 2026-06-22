@@ -31,6 +31,9 @@ pub(super) async fn build(
     model: ProviderWithModel,
     ctx: FactoryContext,
 ) -> Result<AgentInstance, AgentError> {
+    // Nota: aionrs corre in-process (AgentEngine), no spawnea un subproceso con
+    // `command_spec.env`, así que NO inyecta el token de identidad firmado (Fase
+    // 2 #5): esa credencial existe para autenticar agentes externos (ACP/OpenClaw).
     let belongs_to_team = build_context.team.is_some();
     let mut overrides = build_context.config;
 
@@ -606,7 +609,15 @@ fn guide_mcp_to_config(
 ) -> HashMap<String, McpServerConfig> {
     let mut env = HashMap::new();
     env.insert("AION_MCP_PORT".into(), cfg.port.to_string());
-    env.insert("AION_MCP_TOKEN".into(), cfg.token.clone());
+    // Token ligado a la conversación (Fase 2 #5) — ver guide_mcp_server en acp_assembler.
+    env.insert(
+        "AION_MCP_TOKEN".into(),
+        aionui_common::guide_token::scope(
+            &cfg.token,
+            conversation_id,
+            overrides.user_id.as_deref().unwrap_or_default(),
+        ),
+    );
     env.insert("AION_MCP_BACKEND".into(), overrides.backend.clone().unwrap_or_default());
     env.insert("AION_MCP_CONVERSATION_ID".into(), conversation_id.to_owned());
     env.insert("AION_MCP_USER_ID".into(), overrides.user_id.clone().unwrap_or_default());
@@ -940,7 +951,11 @@ mod tests {
 
         let env = server.env.as_ref().unwrap();
         assert_eq!(env.get("AION_MCP_PORT"), Some(&"8000".to_owned()));
-        assert_eq!(env.get("AION_MCP_TOKEN"), Some(&"guide-tok".to_owned()));
+        // AION_MCP_TOKEN va ligado a (conversation_id, user_id) (Fase 2 #5).
+        assert_eq!(
+            aionui_common::guide_token::verify("guide-tok", env.get("AION_MCP_TOKEN").unwrap()),
+            Some(("conv-2".to_owned(), "user-1".to_owned())),
+        );
         assert_eq!(env.get("AION_MCP_BACKEND"), Some(&"aionrs".to_owned()));
         assert_eq!(env.get("AION_MCP_CONVERSATION_ID"), Some(&"conv-2".to_owned()));
         assert_eq!(env.get("AION_MCP_USER_ID"), Some(&"user-1".to_owned()));

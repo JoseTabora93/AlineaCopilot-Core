@@ -8,24 +8,37 @@ use aionui_ai_agent::{
     build_agent_factory,
 };
 use aionui_api_types::GuideMcpConfig;
-use aionui_auth::{CookieConfig, JwtService, QrTokenStore, resolve_jwt_secret};
+use aionui_auth::{
+    CookieConfig, JwtService, QrTokenStore, RequestIdentityService, load_or_create_identity, resolve_jwt_secret,
+};
 use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
     Database, IAcpSessionRepository, IAgentMetadataRepository, IConversationRepository, IMcpServerRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
+    IProjectRepository, IResourceAclRepository, ITaskRepository, IUsageRepository, IUserRepository,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantDefinitionRepository,
     SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
-    SqliteMcpServerRepository, SqliteProviderRepository, SqliteUserRepository,
+    SqliteMcpServerRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteResourceAclRepository,
+    SqliteTaskRepository, SqliteUsageRepository, SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;
 
-use crate::config::{AppConfig, derive_encryption_key};
+use crate::config::{AppConfig, derive_encryption_key, derive_identity_kek};
 
 pub struct AppServices {
     pub database: Database,
     pub jwt_service: Arc<JwtService>,
     pub user_repo: Arc<dyn IUserRepository>,
+    /// Ledger de consumos $ (Fase 2 #3).
+    pub usage_repo: Arc<dyn IUsageRepository>,
+    /// Repositorio de proyectos (Fase 2 #2 — slice 3).
+    pub project_repo: Arc<dyn IProjectRepository>,
+    /// ACL de recursos (membresía de proyecto, eje 2). Lo consume el gate
+    /// fail-closed de `ConversationService::update`.
+    pub resource_acl_repo: Arc<dyn IResourceAclRepository>,
+    /// Tareas/subtareas de proyecto (Fase 2 #2 — slice 4).
+    pub task_repo: Arc<dyn ITaskRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -41,12 +54,18 @@ pub struct AppServices {
     pub agent_registry: Arc<AgentRegistry>,
     pub conversation_repo: Arc<dyn IConversationRepository>,
     pub acp_session_sync: Arc<AcpSessionSyncService>,
+    /// Emisor de tokens de identidad firmados por request (Fase 2 #5). La semilla
+    /// Ed25519 se carga cifrada del keystore (`<data_dir>/secrets/identity.enc`).
+    pub request_identity: Arc<RequestIdentityService>,
     /// Raw JWT secret string, used to derive encryption keys.
     pub jwt_secret_raw: String,
     pub data_dir: PathBuf,
     pub work_dir: PathBuf,
     /// When `true`, skip JWT authentication and use a fixed default user.
     pub local: bool,
+    /// When `true`, enforce per-user file segregation (Fase 2 #5). Derivado de
+    /// `config.enforce_file_scope()` (multiusuario por defecto).
+    pub enforce_file_scope: bool,
     pub app_version: String,
     /// Resolved skill paths. Shared with the `ConversationService` for
     /// snapshot resolution at create time.
@@ -72,6 +91,10 @@ impl AppServices {
             worker_task_manager: self.worker_task_manager.clone(),
             conversation_runtime_state: self.conversation_runtime_state.clone(),
             conversation_repo: self.conversation_repo.clone(),
+            user_repo: self.user_repo.clone(),
+            usage_repo: self.usage_repo.clone(),
+            resource_acl_repo: self.resource_acl_repo.clone(),
+            multiuser: self.enforce_file_scope,
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
         });
         self
@@ -90,8 +113,14 @@ impl AppServices {
         let data_dir = config.data_dir.clone();
         let work_dir = config.work_dir.clone();
         let local = config.local;
+        let enforce_file_scope = config.enforce_file_scope();
         let app_version = config.app_version.clone();
         let user_repo: Arc<dyn IUserRepository> = Arc::new(SqliteUserRepository::new(database.pool().clone()));
+        let usage_repo: Arc<dyn IUsageRepository> = Arc::new(SqliteUsageRepository::new(database.pool().clone()));
+        let project_repo: Arc<dyn IProjectRepository> = Arc::new(SqliteProjectRepository::new(database.pool().clone()));
+        let resource_acl_repo: Arc<dyn IResourceAclRepository> =
+            Arc::new(SqliteResourceAclRepository::new(database.pool().clone()));
+        let task_repo: Arc<dyn ITaskRepository> = Arc::new(SqliteTaskRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -117,6 +146,20 @@ impl AppServices {
         }
 
         let encryption_key = derive_encryption_key(&secret);
+
+        // Identidad firmada por request (Fase 2 #5). El KEK usa dominio separado
+        // del de providers; su raíz es `ALINEA_MASTER_KEY` si está en el entorno
+        // (aísla la identidad del JWT), o el mismo secreto raíz del JWT en su
+        // defecto. La semilla Ed25519 se carga/genera cifrada en reposo (0600).
+        let identity_root = std::env::var("ALINEA_MASTER_KEY")
+            .ok()
+            .unwrap_or_else(|| secret.clone());
+        let identity_kek = derive_identity_kek(&identity_root);
+        let request_identity = Arc::new(
+            load_or_create_identity(&data_dir, &identity_kek)
+                .map_err(|e| anyhow::anyhow!("Failed to load identity keystore: {e}"))?,
+        );
+        tracing::info!(pubkey = %request_identity.public_key_base64(), "Request-identity keystore ready");
 
         let provider_repo = Arc::new(SqliteProviderRepository::new(database.pool().clone()));
         let event_bus = Arc::new(BroadcastEventBus::new(256));
@@ -190,6 +233,7 @@ impl AppServices {
             backend_binary_path: backend_binary_path.clone(),
             guide_mcp_config: guide_mcp_config.clone(),
             mcp_server_repo: Some(mcp_server_repo),
+            request_identity: Some(request_identity.clone()),
         });
 
         // Agent factory is now wired. Future extension/custom agents
@@ -207,6 +251,10 @@ impl AppServices {
             worker_task_manager: worker_task_manager.clone(),
             conversation_runtime_state: conversation_runtime_state.clone(),
             conversation_repo: conversation_repo.clone(),
+            user_repo: user_repo.clone(),
+            usage_repo: usage_repo.clone(),
+            resource_acl_repo: resource_acl_repo.clone(),
+            multiuser: enforce_file_scope,
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
         });
 
@@ -214,6 +262,10 @@ impl AppServices {
             database,
             jwt_service: Arc::new(JwtService::new(secret.clone())),
             user_repo,
+            usage_repo,
+            project_repo,
+            resource_acl_repo,
+            task_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -225,10 +277,12 @@ impl AppServices {
             agent_registry,
             conversation_repo,
             acp_session_sync: acp_agent_service,
+            request_identity,
             jwt_secret_raw: secret,
             data_dir,
             work_dir,
             local,
+            enforce_file_scope,
             app_version,
             skill_paths,
             guide_mcp_config: guide_mcp_config.clone(),
@@ -245,6 +299,10 @@ struct ConversationServiceDeps<'a> {
     worker_task_manager: Arc<dyn IWorkerTaskManager>,
     conversation_runtime_state: Arc<ConversationRuntimeStateService>,
     conversation_repo: Arc<dyn IConversationRepository>,
+    user_repo: Arc<dyn IUserRepository>,
+    usage_repo: Arc<dyn IUsageRepository>,
+    resource_acl_repo: Arc<dyn IResourceAclRepository>,
+    multiuser: bool,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
 }
 
@@ -261,7 +319,11 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
         Arc::new(SqliteAgentMetadataRepository::new(deps.database.pool().clone())),
         Arc::new(SqliteAcpSessionRepository::new(deps.database.pool().clone())),
     )
-    .with_runtime_state(deps.conversation_runtime_state);
+    .with_runtime_state(deps.conversation_runtime_state)
+    .with_multiuser(deps.multiuser);
+    service.with_user_repo(deps.user_repo);
+    service.with_usage_repo(deps.usage_repo);
+    service.with_resource_acl_repo(deps.resource_acl_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),
@@ -282,10 +344,23 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
 mod tests {
     use super::*;
 
+    /// Config de test con `data_dir` temporal aislado por test. La DB en memoria
+    /// regenera el secreto JWT en cada arranque (y con él el KEK de identidad),
+    /// así que un `identity.enc` persistido por otra corrida/test impediría el
+    /// boot; un dir único —limpiado al entrar— da a cada test su propio keystore.
+    fn isolated_config(label: &str) -> AppConfig {
+        let dir = std::env::temp_dir().join(format!("alinea-app-{}-{}", std::process::id(), label));
+        let _ = std::fs::remove_dir_all(&dir);
+        AppConfig {
+            data_dir: dir,
+            ..Default::default()
+        }
+    }
+
     #[tokio::test]
     async fn test_app_services_from_memory_db() {
         let db = aionui_db::init_database_memory().await.unwrap();
-        let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+        let services = AppServices::from_config(db, &isolated_config("memdb")).await.unwrap();
 
         // JWT service should be functional
         let token = services.jwt_service.sign("test_user", "testuser").unwrap();
@@ -302,7 +377,9 @@ mod tests {
     #[tokio::test]
     async fn test_jwt_secret_persisted_to_db() {
         let db = aionui_db::init_database_memory().await.unwrap();
-        let services = AppServices::from_config(db, &AppConfig::default()).await.unwrap();
+        let services = AppServices::from_config(db, &isolated_config("jwtpersist"))
+            .await
+            .unwrap();
 
         // System user should now have a jwt_secret persisted
         let system_user = services.user_repo.get_system_user().await.unwrap();
@@ -318,7 +395,7 @@ mod tests {
         let db = aionui_db::init_database_memory().await.unwrap();
         let config = AppConfig {
             app_version: "9.9.9".to_string(),
-            ..Default::default()
+            ..isolated_config("appver")
         };
         let services = AppServices::from_config(db, &config).await.unwrap();
 

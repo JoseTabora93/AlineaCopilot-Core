@@ -137,12 +137,15 @@ async fn mcp_connect(env: &SmokeEnv, slot_id: &str) -> TcpStream {
         .await
         .expect("tcp connect to TeamMcpServer");
 
+    // Token ligado al slot (Fase 2 #5), como lo emite mcp_stdio_config. El server
+    // toma el slot_id del token; el campo `slot_id` del body es ignorado.
+    let scoped_token = aionui_common::guide_token::scope(&env.auth_token, slot_id, "team-smoke");
     let init_req = json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
-            "auth_token": env.auth_token,
+            "auth_token": scoped_token,
             "slot_id": slot_id,
             "protocolVersion": "2024-11-05",
             "capabilities": {},

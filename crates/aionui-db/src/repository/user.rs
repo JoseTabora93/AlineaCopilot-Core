@@ -1,5 +1,15 @@
 use crate::error::DbError;
-use crate::models::User;
+use crate::models::{Role, User};
+
+/// Resultado de [`IUserRepository::remove_role`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoleRemoval {
+    /// El rol se quitó, o el usuario no lo tenía (no-op idempotente).
+    Removed,
+    /// Bloqueado: quitar el rol `admin` dejaría el sistema sin ningún
+    /// administrador. La fila NO se tocó. Invariante anti-lockout (Fase 2 #5).
+    WouldLeaveNoAdmins,
+}
 
 /// User data access abstraction.
 ///
@@ -71,13 +81,44 @@ pub trait IUserRepository: Send + Sync {
     /// Updates a user's JWT secret.
     async fn update_jwt_secret(&self, user_id: &str, jwt_secret: &str) -> Result<(), DbError>;
 
+    /// Returns the role ids assigned to a user (from `user_roles`). Empty if none.
+    ///
+    /// RBAC eje 1 (rol). Usado por el auth middleware para poblar `CurrentUser.roles`.
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError>;
+
+    /// Asigna `role_id` a `user_id` (idempotente). Ambos deben existir: hay FK a
+    /// `users(id)` y `roles(id)`. RBAC eje 1 — habilita poblar `user_roles`.
+    async fn assign_role(&self, user_id: &str, role_id: &str) -> Result<(), DbError>;
+
+    /// Quita `role_id` de `user_id` de forma **atómica** (idempotente: no error
+    /// si no lo tenía). RBAC eje 1 — usado por el panel admin.
+    ///
+    /// Preserva la invariante "el sistema nunca queda sin administradores": si
+    /// `role_id == "admin"` y el usuario fuese el último admin, NO se quita y se
+    /// devuelve [`RoleRemoval::WouldLeaveNoAdmins`]. El chequeo y el borrado
+    /// ocurren en una sola sentencia SQL para evitar el race TOCTOU de dos
+    /// removals concurrentes que veían `count = 2` y dejaban el sistema en 0.
+    async fn remove_role(&self, user_id: &str, role_id: &str) -> Result<RoleRemoval, DbError>;
+
+    /// Devuelve el catálogo de roles (tabla `roles`), ordenado por `id`.
+    /// Fuente de verdad para los chips/checkboxes del panel admin.
+    async fn list_roles(&self) -> Result<Vec<Role>, DbError>;
+
+    /// Cuenta cuántos usuarios tienen asignado `role_id`. Sostiene invariantes
+    /// como "el sistema nunca queda sin administradores".
+    async fn count_users_with_role(&self, role_id: &str) -> Result<i64, DbError>;
+
     /// Sets the `is_active` flag.
     ///
     /// Setting `false` causes the auth middleware to reject subsequent login
     /// attempts for this account (soft offboarding).
     async fn set_active(&self, user_id: &str, is_active: bool) -> Result<(), DbError>;
 
-    /// Updates the RBAC role. Known values: `"admin"`, `"member"`.
+    /// Updates the legacy single `users.role` column (`"admin"` | `"member"`).
+    ///
+    /// Deprecado bajo multi-rol: la fuente de verdad de roles es `user_roles`
+    /// (ver [`assign_role`](Self::assign_role) / [`remove_role`](Self::remove_role)).
+    /// Se conserva para compatibilidad con el bootstrap/seed y datos legados.
     async fn set_role(&self, user_id: &str, role: &str) -> Result<(), DbError>;
 
     /// Updates the display name. Pass `None` to clear it.

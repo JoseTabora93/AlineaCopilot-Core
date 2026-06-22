@@ -21,6 +21,7 @@ async fn run_acp_tool_call_update_without_insert_creates_placeholder() {
     let user = user_repo.create_user("user-1", "hash").await.unwrap();
     let repo = Arc::new(SqliteConversationRepository::new(db.pool().clone()));
     repo.create(&ConversationRow {
+        project_id: None,
         id: "conv-1".into(),
         user_id: user.id,
         name: "test".into(),

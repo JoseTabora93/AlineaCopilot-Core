@@ -311,9 +311,10 @@ impl RecordingAgent {
     /// Fire a Finish event on the agent's stream (simulates agent completing a turn).
     #[allow(dead_code)]
     fn fire_finish(&self) {
-        let _ = self
-            .event_tx
-            .send(AgentStreamEvent::Finish(FinishEventData { session_id: None }));
+        let _ = self.event_tx.send(AgentStreamEvent::Finish(FinishEventData {
+            session_id: None,
+            ..Default::default()
+        }));
     }
 }
 
@@ -742,7 +743,8 @@ async fn s1b_mcp_stdio_config_per_agent() {
     assert_eq!(cfg_worker.team_id, "e2e-team");
     assert_eq!(cfg_worker.slot_id, "worker-1");
     assert_eq!(cfg_worker.port, cfg_lead.port, "same server port");
-    assert_eq!(cfg_worker.token, cfg_lead.token, "same auth token for same session");
+    // Tokens per-slot (Fase 2 #5): el token va ligado al slot_id, así que difieren.
+    assert_ne!(cfg_worker.token, cfg_lead.token, "per-slot tokens differ");
     assert_ne!(cfg_worker.slot_id, cfg_lead.slot_id);
 
     session.stop();
@@ -1428,7 +1430,8 @@ async fn s8a_wrong_auth_token_rejected() {
 async fn s8b_worker_cannot_call_spawn_agent() {
     let (session, _tm, _repo, _sent) = setup_session().await;
     let port = session_port(&session);
-    let token = session_token(&session);
+    // Token scoped al slot del worker (Fase 2 #5): el server toma el slot del token.
+    let token = session.mcp_stdio_config("worker-1").token;
 
     let mut stream = mcp_connect(port, &token, "worker-1").await;
     let resp = mcp_call_tool(
@@ -1611,7 +1614,8 @@ async fn s10_error_finish_sets_agent_status_to_error() {
 async fn s11_shutdown_approved_interception() {
     let (session, _tm, repo, _sent) = setup_session().await;
     let port = session_port(&session);
-    let token = session_token(&session);
+    // Token scoped al slot del worker (Fase 2 #5).
+    let token = session.mcp_stdio_config("worker-1").token;
 
     let mut stream = mcp_connect(port, &token, "worker-1").await;
     let resp = mcp_call_tool(

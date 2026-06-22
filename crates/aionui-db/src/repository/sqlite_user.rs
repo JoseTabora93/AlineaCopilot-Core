@@ -1,8 +1,13 @@
 use sqlx::SqlitePool;
 
 use crate::error::DbError;
-use crate::models::User;
+use crate::models::{Role, User};
 use crate::repository::IUserRepository;
+use crate::repository::user::RoleRemoval;
+
+/// Id del rol con privilegios de administración (seed de la migración 013).
+/// La invariante anti-lockout de `remove_role` se ancla a este valor.
+const ADMIN_ROLE: &str = "admin";
 
 /// SQLite-backed implementation of [`IUserRepository`].
 #[derive(Clone, Debug)]
@@ -69,6 +74,17 @@ impl IUserRepository for SqliteUserRepository {
         if result.rows_affected() == 0 {
             return Err(DbError::NotFound("system_default_user not found".to_string()));
         }
+
+        // Multi-rol (Fase 2 #5): el bootstrap pone `users.role = 'admin'`, pero el
+        // gate de admin lee `user_roles`. Sin esta fila, el admin recién creado por
+        // el setup quedaría bloqueado (roles=[] → no admin). Materializa el rol.
+        sqlx::query(
+            "INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES ('system_default_user', ?, ?)",
+        )
+        .bind(ADMIN_ROLE)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -229,6 +245,85 @@ impl IUserRepository for SqliteUserRepository {
         }
 
         Ok(())
+    }
+
+    async fn get_user_roles(&self, user_id: &str) -> Result<Vec<String>, DbError> {
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT role_id FROM user_roles WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows.into_iter().map(|(role_id,)| role_id).collect())
+    }
+
+    async fn assign_role(&self, user_id: &str, role_id: &str) -> Result<(), DbError> {
+        let now = aionui_common::now_ms();
+        sqlx::query("INSERT OR IGNORE INTO user_roles (user_id, role_id, created_at) VALUES (?, ?, ?)")
+            .bind(user_id)
+            .bind(role_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn remove_role(&self, user_id: &str, role_id: &str) -> Result<RoleRemoval, DbError> {
+        // Roles no-admin: borrado simple idempotente, sin invariante.
+        if role_id != ADMIN_ROLE {
+            sqlx::query("DELETE FROM user_roles WHERE user_id = ? AND role_id = ?")
+                .bind(user_id)
+                .bind(role_id)
+                .execute(&self.pool)
+                .await?;
+            return Ok(RoleRemoval::Removed);
+        }
+
+        // Rol admin: el chequeo "quedaría >=1 admin" y el borrado van en UNA sola
+        // sentencia. SQLite serializa escrituras, así que dos removals concurrentes
+        // no pueden ambos ver el conteo viejo y dejar el sistema en 0 admins.
+        let deleted = sqlx::query(
+            "DELETE FROM user_roles \
+             WHERE user_id = ? AND role_id = ? \
+               AND (SELECT COUNT(*) FROM user_roles WHERE role_id = ?) > 1",
+        )
+        .bind(user_id)
+        .bind(role_id)
+        .bind(role_id)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        if deleted >= 1 {
+            return Ok(RoleRemoval::Removed);
+        }
+
+        // 0 filas borradas: o el usuario no tenía admin (no-op idempotente), o era
+        // el último admin (bloqueado). Lo distingue una lectura post-hoc — ya no es
+        // sensible al race: el borrado atómico de arriba ya ocurrió o no.
+        let still_admin =
+            sqlx::query_scalar::<_, i64>("SELECT 1 FROM user_roles WHERE user_id = ? AND role_id = ? LIMIT 1")
+                .bind(user_id)
+                .bind(role_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(if still_admin.is_some() {
+            RoleRemoval::WouldLeaveNoAdmins
+        } else {
+            RoleRemoval::Removed
+        })
+    }
+
+    async fn list_roles(&self) -> Result<Vec<Role>, DbError> {
+        let roles = sqlx::query_as::<_, Role>("SELECT id, name, label, created_at FROM roles ORDER BY id")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(roles)
+    }
+
+    async fn count_users_with_role(&self, role_id: &str) -> Result<i64, DbError> {
+        let row: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM user_roles WHERE role_id = ?")
+            .bind(role_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(row.0)
     }
 
     async fn set_active(&self, user_id: &str, is_active: bool) -> Result<(), DbError> {
@@ -564,8 +659,18 @@ mod tests {
         let user = repo.get_system_user().await.unwrap().unwrap();
         assert_eq!(user.username, "admin");
         assert_eq!(user.password_hash, "secure_hash");
-        // Role must remain admin
+        // Role must remain admin (legacy column)
         assert_eq!(user.role, "admin");
+        // Multi-rol (Fase 2 #5): el bootstrap también materializa el rol admin en
+        // user_roles, no solo en users.role — si no, el gate multi-rol (que lee
+        // user_roles) bloquearía al admin recién creado por el setup.
+        assert!(
+            repo.get_user_roles("system_default_user")
+                .await
+                .unwrap()
+                .contains(&"admin".to_string()),
+            "el admin del bootstrap debe tener el rol en user_roles"
+        );
     }
 
     // -- Tests for new multiuser fields (spec section 8) --
@@ -671,5 +776,80 @@ mod tests {
         let (repo, _db) = setup().await;
         let err = repo.delete_user("no_such_id").await.unwrap_err();
         assert!(matches!(err, DbError::NotFound(_)));
+    }
+
+    // -- RBAC eje 1: roles (Fase 2 #5) --
+
+    #[tokio::test]
+    async fn assign_get_remove_role_roundtrip() {
+        let (repo, _db) = setup().await;
+        let user = repo.create_user("nora", "h").await.unwrap();
+
+        assert!(repo.get_user_roles(&user.id).await.unwrap().is_empty());
+
+        repo.assign_role(&user.id, "gerencia").await.unwrap();
+        // idempotente: reasignar no duplica
+        repo.assign_role(&user.id, "gerencia").await.unwrap();
+        assert_eq!(repo.get_user_roles(&user.id).await.unwrap(), vec!["gerencia"]);
+
+        assert_eq!(
+            repo.remove_role(&user.id, "gerencia").await.unwrap(),
+            RoleRemoval::Removed
+        );
+        assert!(repo.get_user_roles(&user.id).await.unwrap().is_empty());
+        // idempotente: quitar lo que no está no es error
+        assert_eq!(
+            repo.remove_role(&user.id, "gerencia").await.unwrap(),
+            RoleRemoval::Removed
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_role_protects_last_admin() {
+        let (repo, _db) = setup().await;
+        let a = repo.create_user("solo", "h").await.unwrap();
+        repo.assign_role(&a.id, "admin").await.unwrap();
+
+        // Único admin → bloqueado, fila intacta.
+        assert_eq!(
+            repo.remove_role(&a.id, "admin").await.unwrap(),
+            RoleRemoval::WouldLeaveNoAdmins
+        );
+        assert_eq!(repo.get_user_roles(&a.id).await.unwrap(), vec!["admin"]);
+
+        // Con un segundo admin, quitarle el rol a uno SÍ se permite.
+        let b = repo.create_user("dos", "h").await.unwrap();
+        repo.assign_role(&b.id, "admin").await.unwrap();
+        assert_eq!(repo.remove_role(&a.id, "admin").await.unwrap(), RoleRemoval::Removed);
+        assert_eq!(repo.count_users_with_role("admin").await.unwrap(), 1);
+
+        // Quitar admin a quien ya no lo tiene = no-op idempotente.
+        assert_eq!(repo.remove_role(&a.id, "admin").await.unwrap(), RoleRemoval::Removed);
+    }
+
+    #[tokio::test]
+    async fn list_roles_returns_six_seeded() {
+        let (repo, _db) = setup().await;
+        let roles = repo.list_roles().await.unwrap();
+        assert_eq!(roles.len(), 6);
+        let ids: Vec<&str> = roles.iter().map(|r| r.id.as_str()).collect();
+        for expected in ["admin", "comercial", "financiera", "gerencia", "ingenieria", "tecnica"] {
+            assert!(ids.contains(&expected), "falta el rol '{expected}'");
+        }
+    }
+
+    #[tokio::test]
+    async fn count_users_with_role_counts_assignments() {
+        let (repo, _db) = setup().await;
+        let a = repo.create_user("a", "h").await.unwrap();
+        let b = repo.create_user("b", "h").await.unwrap();
+
+        assert_eq!(repo.count_users_with_role("admin").await.unwrap(), 0);
+        repo.assign_role(&a.id, "admin").await.unwrap();
+        repo.assign_role(&b.id, "admin").await.unwrap();
+        assert_eq!(repo.count_users_with_role("admin").await.unwrap(), 2);
+
+        repo.remove_role(&a.id, "admin").await.unwrap();
+        assert_eq!(repo.count_users_with_role("admin").await.unwrap(), 1);
     }
 }

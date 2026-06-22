@@ -185,6 +185,9 @@ mod tests {
         let user = PublicUser {
             id: "auth_1712345678_abc".into(),
             username: "admin".into(),
+            role: "admin".into(),
+            is_active: true,
+            display_name: None,
         };
         let json = serde_json::to_value(&user).unwrap();
         assert_eq!(json["id"], "auth_1712345678_abc");
@@ -211,6 +214,9 @@ mod tests {
         let user = PublicUser {
             id: "user_1".into(),
             username: "admin".into(),
+            role: "admin".into(),
+            is_active: true,
+            display_name: None,
         };
         let resp = LoginResponse::new(user.clone(), "jwt_token".into());
         assert!(resp.success);
@@ -225,6 +231,9 @@ mod tests {
             PublicUser {
                 id: "auth_123".into(),
                 username: "admin".into(),
+                role: "admin".into(),
+                is_active: true,
+                display_name: None,
             },
             "eyJhbGciOi".into(),
         );

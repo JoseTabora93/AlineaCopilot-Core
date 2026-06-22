@@ -28,8 +28,8 @@ use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
     IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, SaveRuntimeStateParams, SortOrder,
-    UpsertConversationAssistantSnapshotParams,
+    IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, IResourceAclRepository,
+    IUsageRepository, IUserRepository, SaveRuntimeStateParams, SortOrder, UpsertConversationAssistantSnapshotParams,
 };
 use aionui_extension::AssistantRuleDispatcher;
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
@@ -248,6 +248,18 @@ pub struct ConversationService {
     assistant_state_repo: Arc<RwLock<Option<Arc<dyn IAssistantOverlayRepository>>>>,
     assistant_preference_repo: Arc<RwLock<Option<Arc<dyn IAssistantPreferenceRepository>>>>,
     assistant_dispatcher: Arc<RwLock<Option<Arc<dyn AssistantRuleDispatcher>>>>,
+    /// Resuelve los roles RBAC al construir el contexto de sesión (Fase 2 #5).
+    /// Slot opcional al estilo `mcp_server_repo`: `None` en tests que no lo wirean.
+    user_repo: Arc<RwLock<Option<Arc<dyn IUserRepository>>>>,
+    /// Ledger de consumos (Fase 2 #3). Slot opcional; `None` en tests.
+    usage_repo: Arc<RwLock<Option<Arc<dyn IUsageRepository>>>>,
+    /// ACL de recursos para el gate fail-closed de membresía de proyecto
+    /// (Fase 2 #2). Slot opcional: si `None`, asignar un `project_id` se rechaza
+    /// (fail-closed). `None` en tests que no lo wirean.
+    resource_acl_repo: Arc<RwLock<Option<Arc<dyn IResourceAclRepository>>>>,
+    /// Modo multiusuario (`!local`): namespacea los workspaces auto bajo
+    /// `users/{user_id}/` para la segregación de ficheros (Fase 2 #5).
+    multiuser: bool,
     runtime_state: Arc<ConversationRuntimeStateService>,
 
     // Repos for conversation, acp_session and agent_metadata access.
@@ -314,12 +326,23 @@ impl ConversationService {
             assistant_state_repo: Arc::new(RwLock::new(None)),
             assistant_preference_repo: Arc::new(RwLock::new(None)),
             assistant_dispatcher: Arc::new(RwLock::new(None)),
+            user_repo: Arc::new(RwLock::new(None)),
+            usage_repo: Arc::new(RwLock::new(None)),
+            resource_acl_repo: Arc::new(RwLock::new(None)),
+            multiuser: false,
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
 
             conversation_repo,
             agent_metadata_repo,
             acp_session_repo,
         }
+    }
+
+    /// Activa el modo multiusuario (`!local`): workspaces auto bajo
+    /// `users/{user_id}/` para la segregación de ficheros (Fase 2 #5).
+    pub fn with_multiuser(mut self, multiuser: bool) -> Self {
+        self.multiuser = multiuser;
+        self
     }
 
     pub fn with_runtime_state(mut self, runtime_state: Arc<ConversationRuntimeStateService>) -> Self {
@@ -337,6 +360,42 @@ impl ConversationService {
         if let Ok(mut guard) = self.mcp_server_repo.write() {
             *guard = Some(repo);
         }
+    }
+
+    /// Wire el repo de usuarios para resolver roles RBAC en el contexto de sesión.
+    pub fn with_user_repo(&self, repo: Arc<dyn IUserRepository>) {
+        if let Ok(mut guard) = self.user_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del repo de usuarios (clona el `Arc`, sin retener el guard).
+    fn user_repo_snapshot(&self) -> Option<Arc<dyn IUserRepository>> {
+        self.user_repo.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Wire el ledger de consumos (Fase 2 #3).
+    pub fn with_usage_repo(&self, repo: Arc<dyn IUsageRepository>) {
+        if let Ok(mut guard) = self.usage_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del ledger de consumos (para inyectarlo en `StreamRelay`).
+    pub fn usage_repo(&self) -> Option<Arc<dyn IUsageRepository>> {
+        self.usage_repo.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Wire el repo de ACL para el gate fail-closed de membresía de proyecto (Fase 2 #2).
+    pub fn with_resource_acl_repo(&self, repo: Arc<dyn IResourceAclRepository>) {
+        if let Ok(mut guard) = self.resource_acl_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del repo de ACL para el gate de membresía de proyecto.
+    fn resource_acl_repo(&self) -> Option<Arc<dyn IResourceAclRepository>> {
+        self.resource_acl_repo.read().ok().and_then(|g| g.clone())
     }
 
     pub fn with_assistant_definition_repo(&self, repo: Arc<dyn IAssistantDefinitionRepository>) {
@@ -831,6 +890,8 @@ impl ConversationService {
         let row = aionui_db::models::ConversationRow {
             id: id.clone(),
             user_id: user_id.to_owned(),
+            // Las conversaciones se crean sin proyecto; se asignan después (Fase 2 #2).
+            project_id: None,
             name: req.name.unwrap_or_default(),
             r#type: enum_to_db(&req.r#type)?,
             extra: serde_json::to_string(&extra)
@@ -1412,6 +1473,7 @@ impl ConversationService {
             source: query.source,
             cron_job_id: query.cron_job_id,
             pinned: query.pinned,
+            project_id: query.project_id.clone(),
         };
 
         let result = self.conversation_repo.list_paginated(user_id, &filters).await?;
@@ -1558,12 +1620,33 @@ impl ConversationService {
             })
             .transpose()?;
 
+        // 🔒 Gate fail-closed de membresía de proyecto (Fase 2 #2). Si el request
+        // asigna un `project_id`, el usuario DEBE ser miembro del proyecto (vía
+        // `resource_acl`). Sin repo wireado o sin membresía → Forbidden. Cierra la
+        // precondición HIGH: el `project_id` viaja FIRMADO al agente y el RAG por
+        // proyecto (gbrain) lo consume; aquí se garantiza que el scope es legítimo.
+        if let Some(project_id) = req.project_id.as_deref() {
+            let is_member = match self.resource_acl_repo() {
+                Some(acl) => acl.is_project_member(user_id, project_id).await?,
+                None => false, // fail-closed: sin verificación posible → rechazar.
+            };
+            if !is_member {
+                return Err(ConversationError::Forbidden {
+                    reason: format!("User is not a member of project '{project_id}'"),
+                });
+            }
+        }
+
         let updates = ConversationRowUpdate {
             name: req.name,
             pinned: req.pinned,
             pinned_at,
             model: model_json,
             extra: merged_extra,
+            // Asignar a proyecto (Fase 2 #2). La membresía YA se validó fail-closed
+            // arriba (gate de `resource_acl`), así que el `project_id` firmado que
+            // viaja al agente tiene scope legítimo.
+            project_id: req.project_id.map(Some),
             status: None,
             updated_at: Some(now),
         };
@@ -2564,9 +2647,15 @@ impl ConversationService {
         row: &aionui_db::models::ConversationRow,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options(row)
-            .await
+        SessionContextBuilder::new(
+            &self.workspace_root,
+            &self.agent_metadata_repo,
+            &self.acp_session_repo,
+            self.user_repo_snapshot(),
+            self.multiuser,
+        )
+        .build_options(row)
+        .await
     }
 
     pub async fn build_task_options_for_runtime(
@@ -2575,9 +2664,15 @@ impl ConversationService {
         workspace_override: Option<&str>,
     ) -> Result<BuildTaskOptions, ConversationError> {
         reject_deprecated_runtime_row(row)?;
-        SessionContextBuilder::new(&self.workspace_root, &self.agent_metadata_repo, &self.acp_session_repo)
-            .build_options_with_workspace_override(row, workspace_override)
-            .await
+        SessionContextBuilder::new(
+            &self.workspace_root,
+            &self.agent_metadata_repo,
+            &self.acp_session_repo,
+            self.user_repo_snapshot(),
+            self.multiuser,
+        )
+        .build_options_with_workspace_override(row, workspace_override)
+        .await
     }
 
     pub(crate) async fn ensure_auto_workspace_skill_links(&self, row: &ConversationRow, build_opts: &BuildTaskOptions) {
@@ -2586,12 +2681,15 @@ impl ConversationService {
             return;
         }
         let backend = context_backend_value(context);
-        let expected_workspace = expected_auto_workspace_path(
-            &self.workspace_root,
-            &row.id,
-            &context.conversation.agent_type,
-            backend.as_ref(),
-        );
+        // Misma raíz scopeada que el builder (Fase 2 #5): en multiusuario los
+        // workspaces viven bajo users/{user_id}/, así el match no falla siempre.
+        let ws_root = if self.multiuser && !row.user_id.trim().is_empty() {
+            self.workspace_root.join("users").join(&row.user_id)
+        } else {
+            self.workspace_root.clone()
+        };
+        let expected_workspace =
+            expected_auto_workspace_path(&ws_root, &row.id, &context.conversation.agent_type, backend.as_ref());
 
         let workspace = PathBuf::from(context.workspace.path.trim());
         if workspace != expected_workspace {

@@ -187,7 +187,10 @@ impl TeamSession {
         TeamMcpStdioConfig {
             team_id: self.team.id.clone(),
             port: self.mcp_server.port(),
-            token: self.mcp_server.auth_token().to_owned(),
+            // Token ligado al slot (Fase 2 #5): el server toma el slot_id del token
+            // verificado, no del param, así un teammate no puede reclamar el slot
+            // (rol Lead) de otro. Cierra el slot-spoof.
+            token: aionui_common::guide_token::scope(self.mcp_server.auth_token(), slot_id, &self.team.id),
             slot_id: slot_id.to_owned(),
             binary_path: self.backend_binary_path.to_string_lossy().into_owned(),
         }

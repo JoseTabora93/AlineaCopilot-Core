@@ -7,6 +7,7 @@ mod case_convert;
 mod crypto;
 mod enums;
 mod error;
+pub mod guide_token;
 mod hooks;
 mod id;
 mod pagination;

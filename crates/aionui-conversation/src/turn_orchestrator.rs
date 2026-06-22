@@ -14,7 +14,7 @@ use crate::service::{
 };
 use crate::stream_relay::StreamRelay;
 use crate::turn_continuation_policy::{ContinuationDecision, TurnContinuationPolicy};
-use aionui_api_types::SendMessageRequest;
+use aionui_api_types::{AgentErrorCode, AgentErrorOwnership, SendMessageRequest};
 
 pub(crate) struct TurnStartInput {
     pub user_id: String,
@@ -60,6 +60,56 @@ impl ConversationTurnOrchestrator {
         let persistence = self.service.runtime_persistence();
         let runtime_state = self.service.runtime_state();
         let mut turn_failed = false;
+
+        // Enforcement de límite de consumo (Fase 2 #3, pre-flight): si el usuario
+        // superó su `hard_usd` del período, NO se construye el agente ni se gasta.
+        if let Some(usage_repo) = self.service.usage_repo()
+            && let Ok(Some(limit)) = usage_repo.get_limit(&input.user_id).await
+            && let Some(hard) = limit.hard_usd
+        {
+            let since = now_ms() - 30 * 24 * 60 * 60 * 1000;
+            let spent = usage_repo
+                .summary_for_user(&input.user_id, since)
+                .await
+                .map(|s| s.cost_usd)
+                .unwrap_or(0.0);
+            if spent >= hard {
+                warn!(
+                    conversation_id = %conv_id,
+                    turn_id = %turn_id,
+                    user_id = %input.user_id,
+                    spent,
+                    hard,
+                    "ledger: turno bloqueado por límite de consumo (hard)"
+                );
+                let send_error = AgentSendError::new(
+                    format!(
+                        "Límite de consumo excedido (${spent:.2} de ${hard:.2}). Pide a un administrador que lo amplíe."
+                    ),
+                    AgentErrorCode::UserLlmProviderBillingRequired,
+                    AgentErrorOwnership::Aionui,
+                    None,
+                    false,
+                    false,
+                    None,
+                );
+                self.service
+                    .persist_and_broadcast_send_failure_tip(
+                        &conv_id,
+                        &turn_id,
+                        &send_error,
+                        Some("USAGE_LIMIT_EXCEEDED"),
+                    )
+                    .await;
+                let was_deleting = turn_claim.release_for_turn(&turn_id);
+                self.service
+                    .complete_released_turn(&conv_id, &turn_id, was_deleting)
+                    .await;
+                return ConversationTurnResult {
+                    status: ConversationTurnStatus::Failed,
+                };
+            }
+        }
 
         info!(conversation_id = %conv_id, turn_id = %turn_id, "conversation turn orchestrator started");
         info!(conversation_id = %conv_id, turn_id = %turn_id, "Agent task build started");
@@ -146,6 +196,7 @@ impl ConversationTurnOrchestrator {
                 self.service.broadcaster().clone(),
                 self.service.current_cron_service(),
             )
+            .with_usage_repo(self.service.usage_repo())
             .with_runtime_state(Arc::clone(&runtime_state))
             .with_persistence(persistence.clone())
             .with_turn_completion(false);
