@@ -41,5 +41,8 @@ pub use role::Role;
 pub use system_settings::SystemSettings;
 pub use task::{TaskArtifactRow, TaskHandoffLogRow, TaskRow};
 pub use team::{MailboxMessageRow, TeamRow, TeamTaskRow};
-pub use usage::{NewUsageEvent, UsageEvent, UsageSummary, UserUsageLimit};
+pub use usage::{
+    CreatedServiceToken, IngestResult, IngestUsageEvent, NewUsageEvent, ServiceTokenRow, UsageEvent, UsageSummary,
+    UserUsageLimit,
+};
 pub use user::User;

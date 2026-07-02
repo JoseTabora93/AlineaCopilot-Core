@@ -251,6 +251,30 @@ pub fn json_with_token(method_str: &str, uri: &str, body: serde_json::Value, tok
         .unwrap()
 }
 
+/// POST con Bearer únicamente, sin cookie/header CSRF — el shape real de un
+/// emisor externo (pipeline de preventa, Hermes) que nunca tiene sesión de
+/// navegador. Solo válido contra rutas exentas de CSRF (`/api/usage/ingest`).
+pub fn post_with_bearer_only(uri: &str, body: serde_json::Value, bearer: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {bearer}"))
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
+/// POST sin ningún header `Authorization` (para probar el 401 fail-closed del
+/// ingest cuando no se manda token en absoluto).
+pub fn post_no_auth(uri: &str, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap()
+}
+
 pub fn delete_with_token(uri: &str, token: &str, csrf: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")

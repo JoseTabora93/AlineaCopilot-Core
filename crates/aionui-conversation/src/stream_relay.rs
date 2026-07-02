@@ -293,6 +293,9 @@ impl StreamRelay {
                                     // El modelo de aionrs no viaja en el stream; el precio usa
                                     // la tarifa por defecto hasta cablear el modelo de la conv.
                                     model: None,
+                                    // profile_id: aún no hay perfil de agente cableado al
+                                    // hot-path del Core (tarea A2/A4, fuera de alcance de C1).
+                                    profile_id: None,
                                     tokens_in: fin.tokens_in as i64,
                                     tokens_out: fin.tokens_out as i64,
                                     cache_read: fin.cache_read as i64,
