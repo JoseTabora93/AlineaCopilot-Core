@@ -238,6 +238,10 @@ async fn fixture() -> Fixture {
     service.bootstrap_assistant_storage().await.unwrap();
     states.assistant = AssistantRouterState {
         service: service.clone(),
+        // This fixture predates the A8 profile→assistant visibility gate and
+        // does not exercise `agent_profiles`; `None` keeps the historical
+        // unfiltered behavior for every test in this file.
+        profile_visibility: None,
     };
     // Rewire the skill-router dispatcher so assistant-rule / assistant-skill
     // endpoints route through the test-configured service.

@@ -15,6 +15,18 @@
 //! El JSON `definition` se valida contra el esquema PERFIL v1
 //! (`aionui_db::profile_schema::validate_profile_definition`,
 //! `PROFILE_SCHEMA.md` en la raíz del repo) al crear y al actualizar.
+//!
+//! ## Materialización perfil→assistant (motor `"copilot"`, tarea A8)
+//!
+//! Tras cada `create`/`update`/`delete` que pueda afectar la presencia de
+//! `"copilot"` en `definition.engines` (o el estado `is_active` del perfil),
+//! se invoca `aionui_assistant::materialize_profile` — el compilador
+//! determinista que upsertea/retira la fila `assistant_definitions`
+//! correspondiente (`source='generated'`). Falla ese paso NO revierte la
+//! escritura del perfil (que ya se persistió con éxito); se registra con
+//! `tracing::warn!` y se expone igual la respuesta del CRUD de perfiles —
+//! mismo principio de "best-effort, no bloqueante" que
+//! `AssistantService::delete` aplica a su propia limpieza de archivos.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -26,14 +38,17 @@ use axum::middleware::from_fn;
 use axum::routing::get;
 use axum::{Extension, Router};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 use aionui_api_types::ApiResponse;
+use aionui_assistant::materialize_profile;
 use aionui_auth::{CurrentUser, require_admin_middleware};
 use aionui_common::{ApiError, TimestampMs};
 use aionui_db::models::{AgentProfileRow, UsageSummary};
 use aionui_db::profile_schema::{ProfileCapsView, extract_caps, validate_profile_definition};
 use aionui_db::{
-    AgentProfileUpdate, DbError, IAgentProfileRepository, IResourceAclRepository, IUsageRepository, NewAgentProfile,
+    AgentProfileUpdate, DbError, IAgentProfileRepository, IAssistantDefinitionRepository, IResourceAclRepository,
+    IUsageRepository, NewAgentProfile,
 };
 
 /// Ventana por defecto del gasto por perfil: rolling 30 días en ms — misma
@@ -48,6 +63,10 @@ pub struct ProfileRouterState {
     /// Ledger de consumos — gasto agregado por perfil para el dashboard
     /// (`GET /api/admin/profiles/{id}/usage`, tarea C4).
     pub usage_repo: Arc<dyn IUsageRepository>,
+    /// Usado por el compilador perfil→assistant (motor `"copilot"`, tarea
+    /// A8) para materializar/retirar la fila `assistant_definitions`
+    /// (`source='generated'`) correspondiente a cada perfil.
+    pub assistant_definition_repo: Arc<dyn IAssistantDefinitionRepository>,
 }
 
 fn db_err(err: DbError) -> ApiError {
@@ -60,6 +79,20 @@ fn db_err(err: DbError) -> ApiError {
 
 fn schema_err(err: aionui_db::ProfileSchemaError) -> ApiError {
     ApiError::BadRequest(err.0)
+}
+
+/// Re-materializa (o retira) el assistant `"copilot"` de `profile`.
+/// Best-effort: un fallo aquí se registra pero no afecta la respuesta HTTP
+/// del CRUD de perfiles — el perfil (fuente de verdad) ya se persistió.
+async fn recompile_copilot_assistant(state: &ProfileRouterState, profile: &AgentProfileRow) {
+    if let Err(e) = materialize_profile(state.assistant_definition_repo.as_ref(), profile).await {
+        warn!(
+            profile_id = %profile.id,
+            profile_name = %profile.name,
+            error = %e,
+            "failed to materialize/retire the 'copilot' assistant for this profile"
+        );
+    }
 }
 
 // ── Admin: CRUD completo ──────────────────────────────────────────────
@@ -106,6 +139,7 @@ async fn admin_create_profile(
         })
         .await
         .map_err(db_err)?;
+    recompile_copilot_assistant(&state, &profile).await;
     Ok(Json(ApiResponse::ok(profile)))
 }
 
@@ -179,6 +213,7 @@ async fn admin_update_profile(
         .await
         .map_err(db_err)?
         .ok_or_else(|| ApiError::NotFound(format!("Agent profile {id} not found")))?;
+    recompile_copilot_assistant(&state, &profile).await;
     Ok(Json(ApiResponse::ok(profile)))
 }
 
@@ -186,7 +221,19 @@ async fn admin_delete_profile(
     State(state): State<ProfileRouterState>,
     Path(id): Path<String>,
 ) -> Result<Json<ApiResponse<()>>, ApiError> {
+    // El perfil es borrado FÍSICAMENTE (`IAgentProfileRepository::delete` no
+    // hace soft-delete). El compilador necesita un snapshot del perfil para
+    // localizar/retirar su assistant materializado por `source_ref`, así
+    // que se lee ANTES de borrar y se fuerza `is_active=false` en el
+    // snapshot pasado al compilador — `materialize_profile` trata cualquier
+    // perfil inactivo como "retirar si existe", que es exactamente lo que
+    // corresponde cuando el perfil de origen ya no existirá.
+    let profile = state.profile_repo.get(&id).await.map_err(db_err)?;
     state.profile_repo.delete(&id).await.map_err(db_err)?;
+    if let Some(mut profile) = profile {
+        profile.is_active = false;
+        recompile_copilot_assistant(&state, &profile).await;
+    }
     Ok(Json(ApiResponse::ok(())))
 }
 

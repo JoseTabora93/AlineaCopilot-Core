@@ -8,11 +8,16 @@
 
 pub mod builtin;
 pub mod error;
+pub mod profile_compiler;
+pub mod profile_visibility;
 pub mod routes;
 pub mod service;
 pub mod state;
 
 pub use builtin::{AvatarAsset, BuiltinAssistant, BuiltinAssistantRegistry};
 pub use error::AssistantError;
+pub use profile_compiler::{MaterializeOutcome, assistant_key_for_profile, materialize_profile};
+pub use profile_visibility::filter_visible_assistants;
 pub use routes::{AssistantRouterState, assistant_routes};
 pub use service::AssistantService;
+pub use state::ProfileVisibilityGate;

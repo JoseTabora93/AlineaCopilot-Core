@@ -21,7 +21,10 @@ pub use models::{
     UpdateAssistantParams, UpsertAgentMetadataParams, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
     UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
 };
-pub use profile_schema::{ProfileCapsView, ProfileSchemaError, extract_caps, extract_mcp_allowlist};
+pub use profile_schema::{
+    ProfileCapsView, ProfileModel, ProfileSchemaError, ProfileV1, extract_caps, extract_mcp_allowlist,
+    parse_profile_definition,
+};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationFilters, ConversationRowUpdate, MessageRowUpdate, MessageSearchRow, SortOrder,
