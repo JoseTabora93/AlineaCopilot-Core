@@ -400,7 +400,12 @@ mod tests {
                 &profile.id,
                 aionui_db::AgentProfileUpdate {
                     label: None,
-                    definition: Some(definition_json("preventa", &["copilot"], "# v2 (cambio real)", "zai/glm-5.1")),
+                    definition: Some(definition_json(
+                        "preventa",
+                        &["copilot"],
+                        "# v2 (cambio real)",
+                        "zai/glm-5.1",
+                    )),
                     is_active: None,
                 },
             )
@@ -488,7 +493,12 @@ mod tests {
                 &profile.id,
                 aionui_db::AgentProfileUpdate {
                     label: None,
-                    definition: Some(definition_json("ingenieria", &["hermes"], "# Ingeniería", "zai/glm-5.1")),
+                    definition: Some(definition_json(
+                        "ingenieria",
+                        &["hermes"],
+                        "# Ingeniería",
+                        "zai/glm-5.1",
+                    )),
                     is_active: None,
                 },
             )

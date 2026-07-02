@@ -243,7 +243,11 @@ async fn user_sees_profile_only_with_role_grant_gate_fail_closed() {
     // Usuario CON rol 'ingenieria' + grant de resource_acl a ese rol: SÍ lo ve.
     let (eng_token, _eng_csrf) = setup_and_login(&mut app, &services, "ingeniero", PW).await;
     let ingeniero = services.user_repo.find_by_username("ingeniero").await.unwrap().unwrap();
-    services.user_repo.assign_role(&ingeniero.id, "ingenieria").await.unwrap();
+    services
+        .user_repo
+        .assign_role(&ingeniero.id, "ingenieria")
+        .await
+        .unwrap();
     services
         .resource_acl_repo
         .grant("agent_profile", &profile_id, "ingenieria", "read")
@@ -299,7 +303,12 @@ async fn user_sees_profile_with_direct_user_grant() {
     let profile_id = body["data"]["id"].as_str().unwrap().to_string();
 
     let (user_token, _csrf) = setup_and_login(&mut app, &services, "comercial1", PW).await;
-    let user = services.user_repo.find_by_username("comercial1").await.unwrap().unwrap();
+    let user = services
+        .user_repo
+        .find_by_username("comercial1")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Sin grant: no lo ve.
     let resp = app
@@ -489,7 +498,11 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
     // Usuario CON rol 'ingenieria' + grant de resource_acl a ese rol: sí lo ve.
     let (eng_token, _csrf) = setup_and_login(&mut app, &services, "ingeniero", PW).await;
     let ingeniero = services.user_repo.find_by_username("ingeniero").await.unwrap().unwrap();
-    services.user_repo.assign_role(&ingeniero.id, "ingenieria").await.unwrap();
+    services
+        .user_repo
+        .assign_role(&ingeniero.id, "ingenieria")
+        .await
+        .unwrap();
     services
         .resource_acl_repo
         .grant("agent_profile", &profile_id, "ingenieria", "read")
@@ -507,7 +520,10 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
         .iter()
         .find(|a| a["id"] == "profile:ingenieria")
         .expect("con grant de rol, el usuario debe ver el assistant gestionado");
-    assert_eq!(materialized["source"], "user", "el DTO actual no distingue 'generated' de 'user' a nivel de wire");
+    assert_eq!(
+        materialized["source"], "user",
+        "el DTO actual no distingue 'generated' de 'user' a nivel de wire"
+    );
 }
 
 /// Actualizar `soul_md` en el perfil actualiza el assistant materializado;
@@ -612,7 +628,13 @@ async fn deactivating_profile_removes_materialized_assistant_from_catalog() {
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert!(body["data"].as_array().unwrap().iter().any(|a| a["id"] == "profile:servimec-tko"));
+    assert!(
+        body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "profile:servimec-tko")
+    );
 
     let resp = app
         .clone()
@@ -634,7 +656,11 @@ async fn deactivating_profile_removes_materialized_assistant_from_catalog() {
         .unwrap();
     let body = body_json(resp).await;
     assert!(
-        !body["data"].as_array().unwrap().iter().any(|a| a["id"] == "profile:servimec-tko"),
+        !body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "profile:servimec-tko"),
         "el assistant materializado debe retirarse al desactivar el perfil"
     );
 }
@@ -676,7 +702,11 @@ async fn profile_without_copilot_engine_does_not_materialize_assistant() {
         .unwrap();
     let body = body_json(resp).await;
     assert!(
-        !body["data"].as_array().unwrap().iter().any(|a| a["id"] == "profile:hermes-only"),
+        !body["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["id"] == "profile:hermes-only"),
         "perfil sin 'copilot' en engines no debe materializar assistant"
     );
 }

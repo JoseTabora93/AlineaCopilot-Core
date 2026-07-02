@@ -215,7 +215,10 @@ mod tests {
         let items = vec![mk_response("profile:ingenieria")];
         let u = user("u1", &[]);
         let visible = filter_visible_assistants(&gate, &u, items).await.unwrap();
-        assert!(visible.is_empty(), "sin grant, el usuario no debe ver el assistant gestionado");
+        assert!(
+            visible.is_empty(),
+            "sin grant, el usuario no debe ver el assistant gestionado"
+        );
     }
 
     #[tokio::test]
@@ -240,7 +243,11 @@ mod tests {
         let items = vec![mk_response("profile:ingenieria")];
         let u = user("u1", &["ingenieria"]);
         let visible = filter_visible_assistants(&gate, &u, items).await.unwrap();
-        assert_eq!(visible.len(), 1, "con grant de rol, el usuario debe ver el assistant gestionado");
+        assert_eq!(
+            visible.len(),
+            1,
+            "con grant de rol, el usuario debe ver el assistant gestionado"
+        );
         assert_eq!(visible[0].id, "profile:ingenieria");
     }
 
@@ -271,6 +278,10 @@ mod tests {
         let items = vec![mk_response("builtin-office"), mk_response("custom-123-abcd")];
         let u = user("u1", &[]);
         let visible = filter_visible_assistants(&gate, &u, items).await.unwrap();
-        assert_eq!(visible.len(), 2, "assistants no gestionados no deben pasar por el gate de A1");
+        assert_eq!(
+            visible.len(),
+            2,
+            "assistants no gestionados no deben pasar por el gate de A1"
+        );
     }
 }
