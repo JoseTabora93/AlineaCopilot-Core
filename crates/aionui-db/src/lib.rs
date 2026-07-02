@@ -5,6 +5,7 @@ mod database;
 mod error;
 pub mod models;
 pub mod pricing;
+pub mod profile_schema;
 mod repository;
 pub mod task_state;
 
@@ -13,13 +14,14 @@ pub use database::{
 };
 pub use error::DbError;
 pub use models::{
-    AgentMetadataRow, AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow, AssistantPreferenceRow,
-    AssistantRow, ConversationArtifactRow, ConversationAssistantSnapshotRow, CreateAssistantParams,
-    PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskArtifactRow, TaskHandoffLogRow, TaskRow,
-    UpdateAgentHandshakeParams, UpdateAssistantParams, UpsertAgentMetadataParams, UpsertAssistantDefinitionParams,
-    UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams,
-    UpsertOverrideParams,
+    AgentMetadataRow, AgentProfileRow, AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow,
+    AssistantPreferenceRow, AssistantRow, ConversationArtifactRow, ConversationAssistantSnapshotRow,
+    CreateAssistantParams, PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskArtifactRow, TaskHandoffLogRow,
+    TaskRow, UpdateAgentHandshakeParams, UpdateAssistantParams, UpsertAgentMetadataParams,
+    UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
+    UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
 };
+pub use profile_schema::ProfileSchemaError;
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationFilters, ConversationRowUpdate, MessageRowUpdate, MessageSearchRow, SortOrder,
@@ -31,13 +33,14 @@ pub use repository::provider::{CreateProviderParams, UpdateProviderParams};
 pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentParams};
 pub use repository::team::{UpdateTaskParams, UpdateTeamParams};
 pub use repository::{
-    CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository,
-    IAssistantOverlayRepository, IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository,
-    IChannelRepository, IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
+    AgentProfileUpdate, CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository,
+    IAgentProfileRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
+    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IChannelRepository,
+    IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
     IOAuthTokenRepository, IProjectRepository, IProviderRepository, IRemoteAgentRepository, IResourceAclRepository,
     ISettingsRepository, ITaskRepository, ITeamRepository, IUsageRepository, IUserRepository, MemberRevoke,
-    NewArtifact, NewHandoff, NewProject, NewTask, PersistedSessionState, ProjectUpdate, RoleRemoval,
-    SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
+    NewAgentProfile, NewArtifact, NewHandoff, NewProject, NewTask, PersistedSessionState, ProjectUpdate, RoleRemoval,
+    SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAgentProfileRepository,
     SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteChannelRepository,
     SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository,

@@ -240,6 +240,16 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
+    // Profiles routes (Motor MULTI-PERFIL — plan hermes-alinea, tarea A1).
+    // `auth_middleware` externo pobla `CurrentUser`; el subconjunto
+    // `/api/admin/profiles/*` además exige `require_admin_middleware` (interno
+    // al router, ver `super::profiles::profile_routes`).
+    let profiles_authenticated = super::profiles::profile_routes(super::profiles::ProfileRouterState {
+        profile_repo: services.profile_repo.clone(),
+        acl_repo: services.resource_acl_repo.clone(),
+    })
+    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
     // Office routes protected by auth middleware
     let office_authenticated =
         office_routes(states.office.clone()).route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
@@ -295,6 +305,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(cron_authenticated)
         .merge(usage_authenticated)
         .merge(projects_authenticated)
+        .merge(profiles_authenticated)
         .merge(office_authenticated)
         .merge(shell_authenticated)
         .merge(assistant_authenticated)
