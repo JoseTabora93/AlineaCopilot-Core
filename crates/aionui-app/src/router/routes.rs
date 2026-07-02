@@ -217,10 +217,17 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     // Usage ledger routes (Fase 2 #3). `usage_routes` trae su propio gate
     // `require_admin` en el subconjunto admin; aquí se añade `auth_middleware`
     // (capa externa) para poblar `CurrentUser`.
-    let usage_authenticated = super::usage::usage_routes(super::usage::UsageRouterState {
+    let usage_router_state = super::usage::UsageRouterState {
         usage_repo: services.usage_repo.clone(),
-    })
-    .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+    };
+    let usage_authenticated = super::usage::usage_routes(usage_router_state.clone())
+        .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
+
+    // Ingest de usage de emisores externos (Fase ledger — C1). Deliberadamente
+    // FUERA de `auth_middleware`: se autentica con token de servicio (header
+    // `Authorization: Bearer`), no con sesión de usuario. El handler mismo es
+    // fail-closed sin token válido.
+    let usage_ingest = super::usage::ingest_routes(usage_router_state);
 
     // Projects routes (Fase 2 #2 — slice 3). `auth_middleware` externo pobla
     // `CurrentUser`; la autorización fina (membresía/owner vía resource_acl) vive
@@ -247,6 +254,8 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let profiles_authenticated = super::profiles::profile_routes(super::profiles::ProfileRouterState {
         profile_repo: services.profile_repo.clone(),
         acl_repo: services.resource_acl_repo.clone(),
+        usage_repo: services.usage_repo.clone(),
+        assistant_definition_repo: services.assistant_definition_repo.clone(),
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 
@@ -304,6 +313,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
         .merge(team_authenticated)
         .merge(cron_authenticated)
         .merge(usage_authenticated)
+        .merge(usage_ingest)
         .merge(projects_authenticated)
         .merge(profiles_authenticated)
         .merge(office_authenticated)

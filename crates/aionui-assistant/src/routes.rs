@@ -2,6 +2,7 @@
 
 //! HTTP route handlers for `/api/assistants/*`.
 
+use axum::Extension;
 use axum::Router;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
@@ -14,10 +15,12 @@ use aionui_api_types::{
     ApiResponse, AssistantDetailResponse, AssistantResponse, CreateAssistantRequest, ImportAssistantsRequest,
     ImportAssistantsResult, SetAssistantStateRequest, UpdateAssistantRequest,
 };
+use aionui_auth::CurrentUser;
 use aionui_common::ApiError;
 
 use crate::error::AssistantError;
-pub use crate::state::AssistantRouterState;
+use crate::profile_visibility::filter_visible_assistants;
+pub use crate::state::{AssistantRouterState, ProfileVisibilityGate};
 
 /// Build the router for `/api/assistants/*`.
 pub fn assistant_routes(state: AssistantRouterState) -> Router {
@@ -47,10 +50,23 @@ impl From<AssistantError> for ApiError {
     }
 }
 
+/// `GET /api/assistants`. Aplica el gate de visibilidad de A1
+/// (`list_visible_profiles`) al subconjunto de assistants gestionados
+/// (`source='generated'`, motor `"copilot"` — tarea A8): un usuario sin
+/// grant al perfil de origen no ve su assistant materializado. Los
+/// assistants `builtin`/`user` no pasan por este filtro — su visibilidad
+/// actual no cambia. `Extension<CurrentUser>` viene del `auth_middleware`
+/// externo que ya protege `/api/assistants/*` (ver
+/// `crates/aionui-app/src/router/routes.rs`).
 async fn list(
     State(state): State<AssistantRouterState>,
+    Extension(current): Extension<CurrentUser>,
 ) -> Result<Json<ApiResponse<Vec<AssistantResponse>>>, ApiError> {
     let items = state.service.list().await?;
+    let items = match &state.profile_visibility {
+        Some(gate) => filter_visible_assistants(gate, &current, items).await?,
+        None => items,
+    };
     Ok(Json(ApiResponse::ok(items)))
 }
 

@@ -22,6 +22,9 @@ pub struct UsageEvent {
     pub cache_write: i64,
     pub cost_usd: f64,
     pub created_at: TimestampMs,
+    /// Perfil de agente que originó el costo (Fase ledger — tarea C1). `None`
+    /// para eventos del hot-path que no tienen perfil asociado.
+    pub profile_id: Option<String>,
 }
 
 /// Parámetros para registrar un evento de consumo (el `id`/`created_at` los pone
@@ -38,6 +41,64 @@ pub struct NewUsageEvent {
     pub tokens_out: i64,
     pub cache_read: i64,
     pub cache_write: i64,
+    pub profile_id: Option<String>,
+}
+
+/// Evento de consumo recibido por `POST /api/usage/ingest` (emisores externos:
+/// pipeline de preventa, Hermes). A diferencia de `NewUsageEvent` (hot-path
+/// interno, costo calculado por `pricing::estimate_cost_usd`), el emisor externo
+/// manda su propio `cost_usd` ya calculado y controla `created_at`/idempotencia.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IngestUsageEvent {
+    pub engine: String,
+    pub model: Option<String>,
+    pub provider: Option<String>,
+    pub user_id: Option<String>,
+    pub profile_id: Option<String>,
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub tokens_in: i64,
+    #[serde(default)]
+    pub tokens_out: i64,
+    #[serde(default)]
+    pub cache_read: i64,
+    #[serde(default)]
+    pub cache_write: i64,
+    pub cost_usd: f64,
+    pub ts_ms: TimestampMs,
+    /// Identificador libre del emisor (p.ej. `"preventa_cost"`, `"hermes_export"`).
+    pub source: String,
+    /// Si viene y ya existe, el ingest no duplica el evento (`deduped: true`).
+    pub idempotency_key: Option<String>,
+}
+
+/// Resultado de un ingest: el evento grabado (o el ya existente si se dedujo).
+#[derive(Debug, Clone, Serialize)]
+pub struct IngestResult {
+    pub event_id: String,
+    pub deduped: bool,
+}
+
+/// Row de `service_tokens`: credencial de un emisor externo autorizado a postear
+/// a `/api/usage/ingest`. El token en claro nunca se persiste — solo su hash.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct ServiceTokenRow {
+    pub id: String,
+    pub name: String,
+    #[serde(skip_serializing)]
+    pub token_hash: String,
+    pub is_active: bool,
+    pub created_at: TimestampMs,
+}
+
+/// Respuesta de `POST /api/admin/service-tokens`: el token en claro se expone
+/// UNA sola vez, en el momento de creación.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedServiceToken {
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    pub created_at: TimestampMs,
 }
 
 /// Resumen agregado de consumo de un usuario en una ventana temporal.

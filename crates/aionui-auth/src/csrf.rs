@@ -35,7 +35,13 @@ pub async fn csrf_middleware(
 
     // Validate CSRF for state-changing requests
     let needs_validation = matches!(method, Method::POST | Method::PUT | Method::DELETE | Method::PATCH);
-    let is_exempt = path == "/login" || path == "/api/auth/qr-login";
+    // `/api/usage/ingest` (Fase ledger — C1) se autentica con un service token
+    // Bearer, no con la sesión de cookie que este middleware protege — un
+    // emisor externo (pipeline de preventa, Hermes) nunca tiene el cookie
+    // `aionui-csrf-token`, así que exigirlo lo bloquearía siempre (fail-open
+    // hacia CSRF, pero el handler mismo es fail-closed vía el token de
+    // servicio, que es la defensa real de este endpoint).
+    let is_exempt = path == "/login" || path == "/api/auth/qr-login" || path == "/api/usage/ingest";
 
     if needs_validation && !is_exempt {
         let header_token = request

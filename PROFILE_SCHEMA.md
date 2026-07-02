@@ -4,9 +4,9 @@
 > Congelado por Fable en la decisión de arquitectura A0 del plan
 > `hermes-alinea-plan.md`. Este documento es la fuente de verdad del JSON que
 > vive en la columna `agent_profiles.definition` (migración `020_agent_profiles.sql`).
-> Los compiladores deterministas (tareas A4 → Hermes, A5 → OpenClaw) leen este
-> JSON y lo materializan a config nativa de cada motor. **El perfil es DATO;
-> el motor sigue vanilla.**
+> Los compiladores deterministas (tareas A4 → Hermes, A5 → OpenClaw, A8 →
+> Copilot/assistants del propio Core) leen este JSON y lo materializan a
+> config nativa de cada motor. **El perfil es DATO; el motor sigue vanilla.**
 
 ## Esquema base
 
@@ -32,7 +32,7 @@
 |---|---|---|---|
 | `name` | `string` | sí | Slug único y estable del perfil (kebab-case, sin espacios). Es la clave que usan los compiladores para nombrar directorios/workspaces (`~/.hermes/profiles/<name>/`, `~/.openclaw/agents/<name>/`) y la que persiste en `agent_profiles.name` (columna `UNIQUE`). Inmutable en la práctica: cambiarlo rompe el mapeo con los motores. |
 | `label` | `string` | sí | Nombre visible para humanos en UIs/paneles admin. Puede cambiar libremente sin afectar a los motores. |
-| `engines` | `string[]` | sí | Motores donde este perfil debe compilarse. Valores válidos: `"hermes"`, `"openclaw"`. Un perfil puede vivir en ambos (compilación dual) o en uno solo. |
+| `engines` | `string[]` | sí | Motores donde este perfil debe compilarse. Valores válidos: `"hermes"`, `"openclaw"`, `"copilot"`. Un perfil puede vivir en varios motores a la vez (compilación multi-destino) o en uno solo. `"copilot"` = el propio Core (`AlineaCopilot-Core`): el compilador determinista de la tarea A8 (`aionui_assistant::profile_compiler`) materializa el perfil como un `assistant` gestionado (`assistant_definitions.source='generated'`), visible en `/api/assistants` para los usuarios con grant al perfil (mismo gate de `GET /api/profiles`, tarea A1). |
 | `soul_md` | `string` | sí | El system prompt completo del perfil en Markdown — la "alma" del agente. Se vuelca tal cual a `SOUL.md` (Hermes) o al frontmatter/cuerpo del agente OpenClaw (`workspace/agents/<name>.md`). |
 | `model` | `object` | sí | `{ "primary": string, "fallbacks": string[] }`. `primary` es el modelo por defecto (formato `<proveedor>/<modelo>`, p.ej. `zai/glm-5.1`). `fallbacks` es la lista ordenada de modelos alternos si `primary` falla (gotcha conocido: z.ai sin saldo → fallback obligatorio a OpenRouter). |
 | `mcp_allowlist` | `string[]` | sí (puede ser `[]`) | Nombres de servidores MCP que este perfil puede invocar. Alimenta los `scopes` del token `IdentityClaims` (tarea A2) — el gate de OpenClaw (tarea A3) rechaza llamadas a MCPs fuera de esta lista. |
@@ -46,7 +46,7 @@
 
 - El JSON se valida contra este esquema: **campos desconocidos se rechazan** con error claro (`definition contains unknown field '<x>'`), y los campos obligatorios ausentes también (`definition missing required field '<x>'`).
 - `name` en el JSON debe coincidir con la columna `agent_profiles.name` de la fila (evita drift entre la clave de la tabla y el contenido).
-- `engines[]` solo acepta `"hermes"` / `"openclaw"`.
+- `engines[]` solo acepta `"hermes"` / `"openclaw"` / `"copilot"`.
 - `caps.period` solo acepta `"day"` / `"week"` / `"month"`.
 - `caps.hard_usd >= caps.soft_usd`.
 - `acl.etiqueta` es texto libre (no hay `FOREIGN KEY` a `acl_policy` — el eje 1 y el eje 2/perfiles son ortogonales), pero se recomienda reusar el vocabulario existente.

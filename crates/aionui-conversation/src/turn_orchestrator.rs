@@ -52,6 +52,106 @@ impl ConversationTurnOrchestrator {
         });
     }
 
+    /// Pre-flight del techo de gasto por PERFIL (tarea C4). Devuelve
+    /// `Some(result)` (siempre `Failed`) si el turno debe bloquearse SIN
+    /// construir el agente ni gastar; `None` para continuar normalmente
+    /// (incluye: sin `profile_id`, perfil no encontrado/sin repo wireado,
+    /// `caps` ausente/no parseable, o gasto bajo `hard_usd`).
+    async fn check_profile_cap(
+        &self,
+        build_options: &BuildTaskOptions,
+        conv_id: &str,
+        turn_id: &str,
+    ) -> Option<ConversationTurnResult> {
+        let profile_name = build_options.context.conversation.profile_id.as_deref()?;
+        let profile_repo = self.service.profile_repo()?;
+        let usage_repo = self.service.usage_repo()?;
+
+        let profile = match profile_repo.get_by_name(profile_name).await {
+            Ok(Some(profile)) => profile,
+            Ok(None) => {
+                debug!(
+                    conversation_id = %conv_id,
+                    turn_id = %turn_id,
+                    profile_id = %profile_name,
+                    "ledger: perfil de la sesión no encontrado; sin enforcement de techo de perfil"
+                );
+                return None;
+            }
+            Err(err) => {
+                warn!(
+                    conversation_id = %conv_id,
+                    turn_id = %turn_id,
+                    profile_id = %profile_name,
+                    error = %ErrorChain(&err),
+                    "ledger: fallo al resolver el perfil de la sesión; sin enforcement de techo de perfil"
+                );
+                return None;
+            }
+        };
+
+        // Perfil sin `caps` parseables = sin límite de perfil (solo usuario).
+        let caps = aionui_db::extract_caps(&profile.definition)?;
+
+        let since = now_ms() - 30 * 24 * 60 * 60 * 1000;
+        let spent = match usage_repo.summary_for_profile(profile_name, since).await {
+            Ok(summary) => summary.cost_usd,
+            Err(err) => {
+                warn!(
+                    conversation_id = %conv_id,
+                    turn_id = %turn_id,
+                    profile_id = %profile_name,
+                    error = %ErrorChain(&err),
+                    "ledger: fallo al leer el gasto del perfil; sin enforcement de techo de perfil"
+                );
+                return None;
+            }
+        };
+
+        if spent >= caps.soft_usd && spent < caps.hard_usd {
+            warn!(
+                conversation_id = %conv_id,
+                turn_id = %turn_id,
+                profile_id = %profile_name,
+                spent,
+                soft = caps.soft_usd,
+                hard = caps.hard_usd,
+                "ledger: perfil superó el umbral soft de gasto (solo aviso, no bloquea)"
+            );
+        }
+
+        if spent < caps.hard_usd {
+            return None;
+        }
+
+        warn!(
+            conversation_id = %conv_id,
+            turn_id = %turn_id,
+            profile_id = %profile_name,
+            spent,
+            hard = caps.hard_usd,
+            "ledger: turno bloqueado por límite de consumo del PERFIL (hard)"
+        );
+        let send_error = AgentSendError::new(
+            format!(
+                "El perfil '{profile_name}' no tiene presupuesto disponible (${spent:.2} de ${:.2}). Pide a un administrador que lo amplíe.",
+                caps.hard_usd
+            ),
+            AgentErrorCode::UserLlmProviderBillingRequired,
+            AgentErrorOwnership::Aionui,
+            None,
+            false,
+            false,
+            None,
+        );
+        self.service
+            .persist_and_broadcast_send_failure_tip(conv_id, turn_id, &send_error, Some("PROFILE_USAGE_LIMIT_EXCEEDED"))
+            .await;
+        Some(ConversationTurnResult {
+            status: ConversationTurnStatus::Failed,
+        })
+    }
+
     pub(crate) async fn run_user_turn(self, input: TurnStartInput) -> ConversationTurnResult {
         let mut turn_claim = input.turn_claim;
         let conv_id = input.conversation.id.clone();
@@ -109,6 +209,22 @@ impl ConversationTurnOrchestrator {
                     status: ConversationTurnStatus::Failed,
                 };
             }
+        }
+
+        // Enforcement de techo de gasto POR PERFIL (Fase perfiles — tarea C4,
+        // pre-flight): además del límite por usuario (arriba), si la sesión
+        // tiene `profile_id` (name del perfil, ver `ConversationContext::profile_id`)
+        // y el perfil trae `caps.hard_usd` en su `definition`, se compara el
+        // gasto agregado del PERFIL (todos los usuarios, ventana rolling 30
+        // días) contra ese techo. `caps.soft_usd` solo se loggea (warning) —
+        // no bloquea. Sin `profile_id`, o perfil sin `caps` parseables, el
+        // comportamiento es idéntico al de antes (solo límite de usuario).
+        if let Some(result) = self.check_profile_cap(&input.build_options, &conv_id, &turn_id).await {
+            let was_deleting = turn_claim.release_for_turn(&turn_id);
+            self.service
+                .complete_released_turn(&conv_id, &turn_id, was_deleting)
+                .await;
+            return result;
         }
 
         info!(conversation_id = %conv_id, turn_id = %turn_id, "conversation turn orchestrator started");
