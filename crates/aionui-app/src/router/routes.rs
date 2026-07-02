@@ -254,6 +254,7 @@ pub fn create_router_with_all_state(services: &AppServices, states: ModuleStates
     let profiles_authenticated = super::profiles::profile_routes(super::profiles::ProfileRouterState {
         profile_repo: services.profile_repo.clone(),
         acl_repo: services.resource_acl_repo.clone(),
+        usage_repo: services.usage_repo.clone(),
     })
     .route_layer(from_fn_with_state(auth_mw_state.clone(), auth_middleware));
 

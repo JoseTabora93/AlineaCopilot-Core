@@ -21,23 +21,33 @@ use std::sync::Arc;
 
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::middleware::from_fn;
 use axum::routing::get;
 use axum::{Extension, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use aionui_api_types::ApiResponse;
 use aionui_auth::{CurrentUser, require_admin_middleware};
-use aionui_common::ApiError;
-use aionui_db::models::AgentProfileRow;
-use aionui_db::profile_schema::validate_profile_definition;
-use aionui_db::{AgentProfileUpdate, DbError, IAgentProfileRepository, IResourceAclRepository, NewAgentProfile};
+use aionui_common::{ApiError, TimestampMs};
+use aionui_db::models::{AgentProfileRow, UsageSummary};
+use aionui_db::profile_schema::{ProfileCapsView, extract_caps, validate_profile_definition};
+use aionui_db::{
+    AgentProfileUpdate, DbError, IAgentProfileRepository, IResourceAclRepository, IUsageRepository, NewAgentProfile,
+};
+
+/// Ventana por defecto del gasto por perfil: rolling 30 días en ms — misma
+/// semántica que el ledger de usuarios (`super::usage`) y que el pre-flight
+/// de `turn_orchestrator` (`caps.period: "month"` = rolling 30 días).
+const DEFAULT_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 #[derive(Clone)]
 pub struct ProfileRouterState {
     pub profile_repo: Arc<dyn IAgentProfileRepository>,
     pub acl_repo: Arc<dyn IResourceAclRepository>,
+    /// Ledger de consumos — gasto agregado por perfil para el dashboard
+    /// (`GET /api/admin/profiles/{id}/usage`, tarea C4).
+    pub usage_repo: Arc<dyn IUsageRepository>,
 }
 
 fn db_err(err: DbError) -> ApiError {
@@ -89,7 +99,11 @@ async fn admin_create_profile(
 
     let profile = state
         .profile_repo
-        .create(NewAgentProfile { name, label, definition })
+        .create(NewAgentProfile {
+            name,
+            label,
+            definition,
+        })
         .await
         .map_err(db_err)?;
     Ok(Json(ApiResponse::ok(profile)))
@@ -176,6 +190,65 @@ async fn admin_delete_profile(
     Ok(Json(ApiResponse::ok(())))
 }
 
+// ── Admin: gasto por perfil (tarea C4) ───────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct ProfileUsageQuery {
+    /// Inicio de la ventana (ms epoch). Default: hace 30 días (rolling).
+    since_ms: Option<i64>,
+}
+
+/// Respuesta de `GET /api/admin/profiles/{id}/usage`: gasto agregado del
+/// perfil en la ventana + su `caps` (para que el dashboard muestre gasto vs
+/// techo sin re-parsear `definition`). `usage.user_id` trae el `name` del
+/// perfil (clave de agregación reutilizada — ver
+/// `IUsageRepository::summary_for_profile`).
+#[derive(Serialize)]
+struct ProfileUsageResponse {
+    profile_id: String,
+    /// `name` del perfil — el valor que viaja en `usage_events.profile_id`.
+    profile_name: String,
+    usage: UsageSummary,
+    /// `None` si el `definition` no trae `caps` parseables (sin techo de perfil).
+    caps: Option<ProfileCapsView>,
+    since_ms: TimestampMs,
+}
+
+/// `GET /api/admin/profiles/{id}/usage` — gasto del perfil en la ventana
+/// rolling (30 días por defecto) + su cap, para el dashboard admin.
+async fn admin_profile_usage(
+    State(state): State<ProfileRouterState>,
+    Path(id): Path<String>,
+    Query(q): Query<ProfileUsageQuery>,
+) -> Result<Json<ApiResponse<ProfileUsageResponse>>, ApiError> {
+    let profile = state
+        .profile_repo
+        .get(&id)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| ApiError::NotFound(format!("Agent profile {id} not found")))?;
+
+    let since = q
+        .since_ms
+        .unwrap_or_else(|| (aionui_common::now_ms() - DEFAULT_WINDOW_MS).max(0));
+    // El ledger atribuye por `name` (ver `usage_events.profile_id`), no por
+    // el `id` de la fila — mismo valor que emite el pipeline/ingest.
+    let usage = state
+        .usage_repo
+        .summary_for_profile(&profile.name, since)
+        .await
+        .map_err(db_err)?;
+    let caps = extract_caps(&profile.definition);
+
+    Ok(Json(ApiResponse::ok(ProfileUsageResponse {
+        profile_id: profile.id,
+        profile_name: profile.name,
+        usage,
+        caps,
+        since_ms: since,
+    })))
+}
+
 // ── Usuario: visibilidad por ACL (fail-closed) ───────────────────────
 
 /// `GET /api/profiles` — perfiles ACTIVOS a los que el usuario autenticado
@@ -188,16 +261,38 @@ async fn admin_delete_profile(
 /// Mismo espíritu que el gate de `ConversationService::update` (línea 1623 de
 /// `crates/aionui-conversation/src/service.rs`): sin membresía verificable,
 /// no hay acceso.
+/// Fila de `GET /api/profiles`: el row completo + `caps` aplanado como campo
+/// top-level (tarea C4). Consumidores externos (p.ej. el pipeline de preventa
+/// leyendo `caps.hard_usd` del perfil `preventa` para su `PREVENTA_CAP_USD`)
+/// no necesitan re-parsear el JSON `definition`. Retro-compatible: el
+/// `flatten` conserva todos los campos que ya leían los clientes existentes.
+#[derive(Serialize)]
+struct ProfileListItem {
+    #[serde(flatten)]
+    profile: AgentProfileRow,
+    /// `None` si el `definition` no trae `caps` parseables.
+    caps: Option<ProfileCapsView>,
+}
+
+impl From<AgentProfileRow> for ProfileListItem {
+    fn from(profile: AgentProfileRow) -> Self {
+        let caps = extract_caps(&profile.definition);
+        Self { profile, caps }
+    }
+}
+
 async fn list_visible_profiles(
     State(state): State<ProfileRouterState>,
     Extension(current): Extension<CurrentUser>,
-) -> Result<Json<ApiResponse<Vec<AgentProfileRow>>>, ApiError> {
+) -> Result<Json<ApiResponse<Vec<ProfileListItem>>>, ApiError> {
     // Admins ven todo el catálogo activo sin depender de grants explícitos —
     // consistente con el resto del panel admin (evita que un admin recién
     // creado se quede sin ver perfiles hasta que alguien le otorgue ACL).
     if current.is_admin() {
         let rows = state.profile_repo.list_all(false).await.map_err(db_err)?;
-        return Ok(Json(ApiResponse::ok(rows)));
+        return Ok(Json(ApiResponse::ok(
+            rows.into_iter().map(ProfileListItem::from).collect(),
+        )));
     }
 
     let mut profile_ids: HashSet<String> = HashSet::new();
@@ -234,9 +329,10 @@ async fn list_visible_profiles(
         }
     }
 
-    let visible: Vec<AgentProfileRow> = all_active
+    let visible: Vec<ProfileListItem> = all_active
         .into_iter()
         .filter(|p| profile_ids.contains(&p.id))
+        .map(ProfileListItem::from)
         .collect();
     Ok(Json(ApiResponse::ok(visible)))
 }
@@ -260,6 +356,7 @@ pub fn profile_routes(state: ProfileRouterState) -> Router {
                 .patch(admin_update_profile)
                 .delete(admin_delete_profile),
         )
+        .route("/api/admin/profiles/{id}/usage", get(admin_profile_usage))
         .with_state(state)
         .route_layer(from_fn(require_admin_middleware));
 

@@ -24,6 +24,16 @@ pub trait IUsageRepository: Send + Sync {
     /// Consumo agregado de un usuario desde `since_ms` (inclusive).
     async fn summary_for_user(&self, user_id: &str, since_ms: i64) -> Result<UsageSummary, DbError>;
 
+    /// Consumo agregado de un PERFIL de agente desde `since_ms` (inclusive),
+    /// sumado a través de TODOS los usuarios que lo usaron (Fase perfiles —
+    /// tarea C4: enforcement de techo por perfil). `profile_id` es el `name`
+    /// del perfil (mismo valor que viaja en `usage_events.profile_id` y en
+    /// `ConversationContext::profile_id` — ver `crates/aionui-ai-agent/src/factory/acp.rs`),
+    /// NO el `id` de la fila `agent_profiles`. El `user_id` del `UsageSummary`
+    /// devuelto es el propio `profile_id` (mismo patrón de reuso que
+    /// `summary_all_users_filtered` usa `user_id` como clave de agrupación).
+    async fn summary_for_profile(&self, profile_id: &str, since_ms: i64) -> Result<UsageSummary, DbError>;
+
     /// Consumo agregado de TODOS los usuarios desde `since_ms` (panel admin),
     /// opcionalmente filtrado por `profile_id`/`engine` (Fase ledger — C1).
     async fn summary_all_users(&self, since_ms: i64) -> Result<Vec<UsageSummary>, DbError> {

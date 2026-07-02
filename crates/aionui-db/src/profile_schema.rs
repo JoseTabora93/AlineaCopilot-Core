@@ -7,7 +7,7 @@
 //! `caps.period`, `caps.hard_usd >= soft_usd`) con mensajes de error claros
 //! para la UI admin.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Error de validación del esquema PERFIL v1. El mensaje es apto para mostrar
@@ -215,6 +215,36 @@ pub fn extract_mcp_allowlist(raw: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// `definition.caps` YA validado, expuesto al enforcement de techo de gasto
+/// por perfil (Fase perfiles — tarea C4) y al endpoint `GET /api/profiles`
+/// (para que el pipeline de preventa lea `caps.hard_usd` sin re-parsear el
+/// `definition` crudo). Serializable directo a la respuesta JSON del API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileCapsView {
+    pub soft_usd: f64,
+    pub hard_usd: f64,
+    pub period: String,
+}
+
+/// Extrae `definition.caps` de un `agent_profiles.definition` YA validado
+/// (tarea C4). Igual de tolerante que `extract_mcp_allowlist`: si `raw` no es
+/// JSON válido o `caps` falta/tiene el tipo incorrecto, devuelve `None` en
+/// vez de propagar un error — un perfil sin `caps` bien formado se trata como
+/// "sin límite de perfil" (solo aplica el límite de usuario), nunca bloquea
+/// la sesión por un problema de parseo.
+pub fn extract_caps(raw: &str) -> Option<ProfileCapsView> {
+    let value = serde_json::from_str::<Value>(raw).ok()?;
+    let caps = value.get("caps")?;
+    let soft_usd = caps.get("soft_usd")?.as_f64()?;
+    let hard_usd = caps.get("hard_usd")?.as_f64()?;
+    let period = caps.get("period")?.as_str()?.to_owned();
+    Some(ProfileCapsView {
+        soft_usd,
+        hard_usd,
+        period,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +438,27 @@ mod tests {
         assert_eq!(extract_mcp_allowlist("{not json"), Vec::<String>::new());
         assert_eq!(extract_mcp_allowlist(r#"{"other":1}"#), Vec::<String>::new());
         assert_eq!(extract_mcp_allowlist(&valid_json("x")), Vec::<String>::new());
+    }
+
+    // Tarea C4 — extracción de `caps` para el pre-flight de techo por perfil
+    // y para `GET /api/profiles`.
+    #[test]
+    fn extract_caps_returns_configured_thresholds() {
+        let json = valid_json("ingenieria").replace(
+            r#""caps": { "soft_usd": 1.0, "hard_usd": 2.0, "period": "month" },"#,
+            r#""caps": { "soft_usd": 5.0, "hard_usd": 10.0, "period": "month" },"#,
+        );
+        let caps = extract_caps(&json).expect("caps present");
+        assert_eq!(caps.soft_usd, 5.0);
+        assert_eq!(caps.hard_usd, 10.0);
+        assert_eq!(caps.period, "month");
+    }
+
+    #[test]
+    fn extract_caps_none_when_missing_or_invalid() {
+        assert_eq!(extract_caps("{not json"), None);
+        assert_eq!(extract_caps(r#"{"other":1}"#), None);
+        assert_eq!(extract_caps(r#"{"caps": {"soft_usd": 1.0}}"#), None);
+        assert_eq!(extract_caps(r#"{"caps": "not-an-object"}"#), None);
     }
 }

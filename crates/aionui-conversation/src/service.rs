@@ -27,7 +27,7 @@ use aionui_common::{
 use aionui_db::models::{ConversationRow, MessageRow};
 use aionui_db::{
     ConversationFilters, ConversationRowUpdate, CreateAcpSessionParams, IAcpSessionRepository,
-    IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
+    IAgentMetadataRepository, IAgentProfileRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
     IAssistantPreferenceRepository, IConversationRepository, IMcpServerRepository, IResourceAclRepository,
     IUsageRepository, IUserRepository, SaveRuntimeStateParams, SortOrder, UpsertConversationAssistantSnapshotParams,
 };
@@ -253,6 +253,11 @@ pub struct ConversationService {
     user_repo: Arc<RwLock<Option<Arc<dyn IUserRepository>>>>,
     /// Ledger de consumos (Fase 2 #3). Slot opcional; `None` en tests.
     usage_repo: Arc<RwLock<Option<Arc<dyn IUsageRepository>>>>,
+    /// Perfiles de agente (Motor MULTI-PERFIL — tarea C4: enforcement de techo
+    /// de gasto por perfil en el pre-flight del turno). Slot opcional al
+    /// mismo estilo que `usage_repo`; `None` en tests que no lo wirean (el
+    /// enforcement por perfil simplemente no aplica, igual que sin `profile_id`).
+    profile_repo: Arc<RwLock<Option<Arc<dyn IAgentProfileRepository>>>>,
     /// ACL de recursos para el gate fail-closed de membresía de proyecto
     /// (Fase 2 #2). Slot opcional: si `None`, asignar un `project_id` se rechaza
     /// (fail-closed). `None` en tests que no lo wirean.
@@ -328,6 +333,7 @@ impl ConversationService {
             assistant_dispatcher: Arc::new(RwLock::new(None)),
             user_repo: Arc::new(RwLock::new(None)),
             usage_repo: Arc::new(RwLock::new(None)),
+            profile_repo: Arc::new(RwLock::new(None)),
             resource_acl_repo: Arc::new(RwLock::new(None)),
             multiuser: false,
             runtime_state: Arc::new(ConversationRuntimeStateService::default()),
@@ -384,6 +390,19 @@ impl ConversationService {
     /// Snapshot del ledger de consumos (para inyectarlo en `StreamRelay`).
     pub fn usage_repo(&self) -> Option<Arc<dyn IUsageRepository>> {
         self.usage_repo.read().ok().and_then(|g| g.clone())
+    }
+
+    /// Wire el repo de perfiles de agente (Fase perfiles — tarea C4:
+    /// enforcement de techo de gasto por perfil en el pre-flight del turno).
+    pub fn with_profile_repo(&self, repo: Arc<dyn IAgentProfileRepository>) {
+        if let Ok(mut guard) = self.profile_repo.write() {
+            *guard = Some(repo);
+        }
+    }
+
+    /// Snapshot del repo de perfiles (para el pre-flight en `turn_orchestrator`).
+    pub(crate) fn profile_repo(&self) -> Option<Arc<dyn IAgentProfileRepository>> {
+        self.profile_repo.read().ok().and_then(|g| g.clone())
     }
 
     /// Wire el repo de ACL para el gate fail-closed de membresía de proyecto (Fase 2 #2).

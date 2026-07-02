@@ -100,6 +100,28 @@ impl IUsageRepository for SqliteUsageRepository {
         })
     }
 
+    async fn summary_for_profile(&self, profile_id: &str, since_ms: i64) -> Result<UsageSummary, DbError> {
+        let row: (i64, i64, i64, i64, f64, i64) = sqlx::query_as(
+            "SELECT COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0), \
+                    COALESCE(SUM(cache_read), 0), COALESCE(SUM(cache_write), 0), \
+                    COALESCE(SUM(cost_usd), 0.0), COUNT(*) \
+             FROM usage_events WHERE profile_id = ? AND created_at >= ?",
+        )
+        .bind(profile_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(UsageSummary {
+            user_id: profile_id.to_string(),
+            tokens_in: row.0,
+            tokens_out: row.1,
+            cache_read: row.2,
+            cache_write: row.3,
+            cost_usd: row.4,
+            events: row.5,
+        })
+    }
+
     async fn summary_all_users_filtered(
         &self,
         since_ms: i64,
@@ -440,6 +462,35 @@ mod tests {
                 .events,
             1
         );
+    }
+
+    #[tokio::test]
+    async fn summary_for_profile_aggregates_across_users() {
+        let db = init_database_memory().await.unwrap();
+        let repo = SqliteUsageRepository::new(db.pool().clone());
+
+        // Dos eventos del mismo perfil ('preventa'), atribuidos a "usuarios"
+        // (aquí ambos caen en system_default_user vía ingest sin user_id) +
+        // un evento de un perfil distinto que NO debe contar.
+        repo.ingest_event(sample_ingest_event("openclaw", Some("preventa"), None))
+            .await
+            .unwrap();
+        repo.ingest_event(sample_ingest_event("openclaw", Some("preventa"), None))
+            .await
+            .unwrap();
+        repo.ingest_event(sample_ingest_event("hermes", Some("servimec-tko"), None))
+            .await
+            .unwrap();
+
+        let summary = repo.summary_for_profile("preventa", 0).await.unwrap();
+        assert_eq!(summary.events, 2);
+        assert!((summary.cost_usd - 2.46).abs() < 1e-9, "cost {}", summary.cost_usd);
+        assert_eq!(summary.user_id, "preventa", "user_id field reused as profile key");
+
+        // Perfil sin eventos: agregados en cero, no error.
+        let empty = repo.summary_for_profile("no-such-profile", 0).await.unwrap();
+        assert_eq!(empty.events, 0);
+        assert_eq!(empty.cost_usd, 0.0);
     }
 
     #[tokio::test]

@@ -333,6 +333,10 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     service.with_user_repo(deps.user_repo);
     service.with_usage_repo(deps.usage_repo);
     service.with_resource_acl_repo(deps.resource_acl_repo);
+    // Perfiles de agente: pre-flight de techo de gasto por perfil (tarea C4).
+    service.with_profile_repo(Arc::new(SqliteAgentProfileRepository::new(
+        deps.database.pool().clone(),
+    )));
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
     service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
         deps.database.pool().clone(),
