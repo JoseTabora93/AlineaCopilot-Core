@@ -2,6 +2,7 @@
 
 mod health;
 mod identity;
+mod profiles;
 mod projects;
 mod routes;
 mod state;

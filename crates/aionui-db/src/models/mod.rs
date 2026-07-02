@@ -1,5 +1,6 @@
 mod acp_session;
 mod agent_metadata;
+mod agent_profile;
 mod assistant;
 mod channel;
 mod client_preference;
@@ -21,6 +22,7 @@ mod user;
 
 pub use acp_session::AcpSessionRow;
 pub use agent_metadata::{AgentMetadataRow, UpdateAgentHandshakeParams, UpsertAgentMetadataParams};
+pub use agent_profile::AgentProfileRow;
 pub use assistant::{
     AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow, AssistantPreferenceRow, AssistantRow,
     CreateAssistantParams, UpdateAssistantParams, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
