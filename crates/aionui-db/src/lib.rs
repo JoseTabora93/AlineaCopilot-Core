@@ -21,7 +21,7 @@ pub use models::{
     UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
     UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
 };
-pub use profile_schema::ProfileSchemaError;
+pub use profile_schema::{ProfileSchemaError, extract_mcp_allowlist};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationFilters, ConversationRowUpdate, MessageRowUpdate, MessageSearchRow, SortOrder,
@@ -34,13 +34,13 @@ pub use repository::remote_agent::{CreateRemoteAgentParams, UpdateRemoteAgentPar
 pub use repository::team::{UpdateTaskParams, UpdateTeamParams};
 pub use repository::{
     AgentProfileUpdate, CreateAcpSessionParams, IAcpSessionRepository, IAgentMetadataRepository,
-    IAgentProfileRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IChannelRepository,
-    IClientPreferenceRepository, IConversationRepository, ICronRepository, IMcpServerRepository,
-    IOAuthTokenRepository, IProjectRepository, IProviderRepository, IRemoteAgentRepository, IResourceAclRepository,
-    ISettingsRepository, ITaskRepository, ITeamRepository, IUsageRepository, IUserRepository, MemberRevoke,
-    NewAgentProfile, NewArtifact, NewHandoff, NewProject, NewTask, PersistedSessionState, ProjectUpdate, RoleRemoval,
-    SaveRuntimeStateParams, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAgentProfileRepository,
+    IAgentProfileRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository, IAssistantOverrideRepository,
+    IAssistantPreferenceRepository, IAssistantRepository, IChannelRepository, IClientPreferenceRepository,
+    IConversationRepository, ICronRepository, IMcpServerRepository, IOAuthTokenRepository, IProjectRepository,
+    IProviderRepository, IRemoteAgentRepository, IResourceAclRepository, ISettingsRepository, ITaskRepository,
+    ITeamRepository, IUsageRepository, IUserRepository, MemberRevoke, NewAgentProfile, NewArtifact, NewHandoff,
+    NewProject, NewTask, PersistedSessionState, ProjectUpdate, RoleRemoval, SaveRuntimeStateParams,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAgentProfileRepository,
     SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
     SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteChannelRepository,
     SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository,

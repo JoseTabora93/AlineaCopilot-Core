@@ -238,6 +238,10 @@ impl AppServices {
             guide_mcp_config: guide_mcp_config.clone(),
             mcp_server_repo: Some(mcp_server_repo),
             request_identity: Some(request_identity.clone()),
+            // Motor MULTI-PERFIL (tarea A2): ambos ya construidos arriba
+            // (líneas ~123-127) antes de este punto.
+            profile_repo: Some(profile_repo.clone()),
+            resource_acl_repo: Some(resource_acl_repo.clone()),
         });
 
         // Agent factory is now wired. Future extension/custom agents

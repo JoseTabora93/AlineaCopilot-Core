@@ -95,6 +95,15 @@ impl<'a> SessionContextBuilder<'a> {
             reason: format!("Invalid Team runtime context: {e}"),
         })?;
         let kind = self.build_kind(row, &agent_type, extra, team.clone()).await?;
+        // Tarea A2: `profile_id` de la sesión, hoy solo soportado por el
+        // kind ACP (`AcpBuildExtra.profile_id`). Se lee del `kind` YA
+        // construido (no de `extra` crudo) para no duplicar el parseo del
+        // JSON; Aionrs no lo soporta todavía (`None`), igual que `project_id`
+        // solo es real para conversaciones — el fallback vive en la factory.
+        let profile_id = match &kind {
+            AgentSessionKind::Acp(acp) => acp.config.profile_id.clone(),
+            AgentSessionKind::Aionrs(_) => None,
+        };
         let roles = self.resolve_roles(&row.user_id).await;
 
         Ok(AgentSessionContext {
@@ -103,6 +112,7 @@ impl<'a> SessionContextBuilder<'a> {
                 user_id: row.user_id.clone(),
                 roles,
                 project_id: row.project_id.clone(),
+                profile_id,
                 agent_type,
                 source: row.source.clone(),
             },

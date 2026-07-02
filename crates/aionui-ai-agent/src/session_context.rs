@@ -28,6 +28,12 @@ pub struct ConversationContext {
     /// Proyecto de la conversación (Fase 2 #2). Viaja al agente en el token de
     /// identidad firmado como `project_id` para acotar el scope (RAG por proyecto).
     pub project_id: Option<String>,
+    /// Perfil de agente de la sesión (Motor MULTI-PERFIL — tarea A2), por
+    /// `name` de `agent_profiles`. `None` = sin perfil (comportamiento legado
+    /// intacto). Cuando está presente, la factory ACP debe verificar acceso
+    /// (`resource_acl` `agent_profile`, fail-closed) ANTES de emitir el token
+    /// de identidad, y poblar `scopes` desde `definition.mcp_allowlist`.
+    pub profile_id: Option<String>,
     pub agent_type: AgentType,
     pub source: Option<String>,
 }

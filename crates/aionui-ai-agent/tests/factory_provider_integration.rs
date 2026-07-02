@@ -79,6 +79,8 @@ fn make_factory(
         guide_mcp_config: None,
         mcp_server_repo: None,
         request_identity: None,
+        profile_repo: None,
+        resource_acl_repo: None,
     })
 }
 
@@ -91,6 +93,7 @@ fn make_aionrs_options(
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
             project_id: None,
+            profile_id: None,
             conversation_id: conversation_id.to_owned(),
             user_id: "user-1".to_owned(),
             roles: vec![],

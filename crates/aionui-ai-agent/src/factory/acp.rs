@@ -11,8 +11,8 @@ use agent_client_protocol::schema::{EnvVariable, HttpHeader, McpServer, McpServe
 use aionui_api_types::{SessionMcpServer, SessionMcpTransport};
 use aionui_auth::RequestIdentityService;
 use aionui_common::CommandSpec;
-use aionui_db::IMcpServerRepository;
 use aionui_db::models::McpServerRow;
+use aionui_db::{IAgentProfileRepository, IMcpServerRepository, IResourceAclRepository, extract_mcp_allowlist};
 use aionui_mcp::{AcpMcpCapabilities, parse_acp_mcp_capabilities};
 use aionui_runtime::{
     ManagedAcpToolId, ensure_managed_acp_tool_with_reporter, ensure_node_runtime_with_reporter, ensure_runtime_command,
@@ -27,6 +27,73 @@ use crate::runtime_status::{conversation_acp_tool_runtime_reporter, conversation
 /// queda como follow-up (Fase 2 #5).
 const IDENTITY_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000; // 12 h
 
+/// Verifica que `user_id` (o alguno de `roles`) tenga acceso al perfil
+/// `profile_id` (por `name`) vía `resource_acl` (`resource_type='agent_profile'`),
+/// y devuelve el perfil resuelto junto con sus `scopes` (`mcp:<server>` por
+/// cada entrada de `definition.mcp_allowlist`).
+///
+/// 🔒 Gate FAIL-CLOSED (tarea A2 — replica `list_visible_profiles`,
+/// `crates/aionui-app/src/router/profiles.rs`): cualquier ambigüedad
+/// (perfil inexistente/inactivo, repos no wireados, ni user ni rol con
+/// grant) deniega con `AgentError::forbidden`/`bad_request` — el agente NO
+/// se construye. Los admins (`roles` contiene `"admin"`) pasan sin grant
+/// explícito, igual que en la ruta de listado.
+async fn resolve_profile_scopes(
+    profile_id: &str,
+    user_id: &str,
+    roles: &[String],
+    profile_repo: Option<&dyn IAgentProfileRepository>,
+    acl_repo: Option<&dyn IResourceAclRepository>,
+) -> Result<Vec<String>, AgentError> {
+    let profile_repo = profile_repo.ok_or_else(|| {
+        AgentError::forbidden(format!(
+            "profile '{profile_id}': no profile repository wired; denying by default"
+        ))
+    })?;
+    let acl_repo = acl_repo.ok_or_else(|| {
+        AgentError::forbidden(format!(
+            "profile '{profile_id}': no ACL repository wired; denying by default"
+        ))
+    })?;
+
+    let profile = profile_repo
+        .get_by_name(profile_id)
+        .await
+        .map_err(|e| AgentError::internal(format!("profile '{profile_id}': lookup failed: {e}")))?
+        .filter(|p| p.is_active)
+        .ok_or_else(|| AgentError::forbidden(format!("profile '{profile_id}' not found or inactive")))?;
+
+    let is_admin = roles.iter().any(|r| r == "admin");
+    if !is_admin {
+        let mut granted = acl_repo
+            .is_member("agent_profile", &profile.id, user_id)
+            .await
+            .map_err(|e| AgentError::internal(format!("profile '{profile_id}': ACL check failed: {e}")))?;
+        if !granted {
+            for role in roles {
+                if acl_repo
+                    .is_member("agent_profile", &profile.id, role)
+                    .await
+                    .map_err(|e| AgentError::internal(format!("profile '{profile_id}': ACL check failed: {e}")))?
+                {
+                    granted = true;
+                    break;
+                }
+            }
+        }
+        if !granted {
+            return Err(AgentError::forbidden(format!(
+                "user '{user_id}' has no access to profile '{profile_id}'"
+            )));
+        }
+    }
+
+    Ok(extract_mcp_allowlist(&profile.definition)
+        .into_iter()
+        .map(|server| format!("mcp:{server}"))
+        .collect())
+}
+
 /// Emite un token de identidad firmado y lo inyecta (junto a la clave pública)
 /// en `env` para el proceso del agente. No-op si no hay servicio o `user_id`
 /// vacío/en blanco.
@@ -39,23 +106,47 @@ const IDENTITY_TOKEN_TTL_MS: i64 = 12 * 60 * 60 * 1000; // 12 h
 /// - `project_id`: el **proyecto real** de la conversación (Fase 2 #2) cuando
 ///   pertenece a uno; si no, cae a `conversation_id` como unidad mínima de
 ///   aislamiento. El agente lo usa para acotar el scope (RAG por proyecto).
-/// - `scopes = []`: sin scopes adicionales; el consumidor debe tratarlo como
-///   deny-by-default, no como "sin restricción".
+/// - `profile_id`: el perfil de agente de la sesión (tarea A2), o `None` si no
+///   tiene — comportamiento legado intacto.
+/// - `scopes`: vacío sin perfil (deny-by-default, igual que antes de esta
+///   tarea); con perfil, `mcp:<server>` por cada entrada de
+///   `definition.mcp_allowlist` — SOLO tras pasar el gate de acceso
+///   (`resolve_profile_scopes`). El consumidor debe tratar `scopes = []`
+///   como deny-by-default, no como "sin restricción".
 ///
-/// Si la emisión falla, deja un warn y continúa **sin** token (fail-open en el
-/// Core). La garantía fail-closed —denegar cuando falta `AION_IDENTITY_TOKEN`—
-/// es responsabilidad del agente (OpenClaw) y aún no está verificada extremo a
+/// Con `profile_id` presente, el gate de acceso se verifica ANTES de emitir:
+/// si el usuario no tiene grant sobre el perfil, esta función devuelve
+/// `Err(AgentError::Forbidden)` y **el agente no se construye** (a diferencia
+/// del resto de esta función, que es fail-open si la firma falla).
+///
+/// Sin `profile_id`, si la emisión falla, deja un warn y continúa **sin**
+/// token (fail-open en el Core, comportamiento preexistente). La garantía
+/// fail-closed —denegar cuando falta `AION_IDENTITY_TOKEN`— es
+/// responsabilidad del agente (OpenClaw) y aún no está verificada extremo a
 /// extremo en este repo.
-fn inject_identity_env(
+async fn inject_identity_env(
     env: &mut Vec<aionui_common::EnvVar>,
     request_identity: Option<&RequestIdentityService>,
+    profile_repo: Option<&dyn IAgentProfileRepository>,
+    acl_repo: Option<&dyn IResourceAclRepository>,
     ctx: &FactoryContext,
     now_ms: i64,
-) {
-    let Some(ri) = request_identity else { return };
+) -> Result<(), AgentError> {
+    let Some(ri) = request_identity else { return Ok(()) };
     if ctx.user_id.trim().is_empty() {
-        return;
+        return Ok(());
     }
+
+    // 🔒 Gate FAIL-CLOSED (tarea A2): con perfil, se resuelve el acceso ANTES
+    // de emitir. Un `Err` aquí interrumpe la construcción del agente — no es
+    // fail-open como el resto de esta función.
+    let scopes = match ctx.profile_id.as_deref() {
+        Some(profile_id) => {
+            resolve_profile_scopes(profile_id, &ctx.user_id, &ctx.roles, profile_repo, acl_repo).await?
+        }
+        None => Vec::new(),
+    };
+
     match ri.issue_for(
         ctx.user_id.clone(),
         ctx.roles.clone(),
@@ -73,7 +164,8 @@ fn inject_identity_env(
                 .clone()
                 .unwrap_or_else(|| format!("conv:{}", ctx.conversation_id)),
         ),
-        Vec::new(),
+        ctx.profile_id.clone(),
+        scopes,
         now_ms,
         IDENTITY_TOKEN_TTL_MS,
     ) {
@@ -89,6 +181,7 @@ fn inject_identity_env(
             debug!(
                 conversation_id = %ctx.conversation_id,
                 user_id = %ctx.user_id,
+                profile_id = ?ctx.profile_id,
                 "identity: token injected into agent env"
             );
         }
@@ -100,6 +193,7 @@ fn inject_identity_env(
             );
         }
     }
+    Ok(())
 }
 
 pub(super) async fn build(
@@ -177,12 +271,19 @@ pub(super) async fn build(
     // proceso del agente. El env se fija una vez en el spawn; con TTL largo cubre
     // la sesión (re-emisión por turno = follow-up). Ver `inject_identity_env`
     // para el contrato de claims y la semántica fail-open/fail-closed.
+    //
+    // Con `ctx.profile_id` presente (tarea A2), esta llamada puede devolver
+    // `Err(Forbidden)` si el usuario no tiene grant sobre el perfil — el `?`
+    // interrumpe la construcción del agente ANTES de que arranque el proceso.
     inject_identity_env(
         &mut command_spec.env,
         deps.request_identity.as_deref(),
+        deps.profile_repo.as_deref(),
+        deps.resource_acl_repo.as_deref(),
         &ctx,
         aionui_common::now_ms(),
-    );
+    )
+    .await?;
 
     let session_snapshot = build_context.session_snapshot;
 
@@ -627,14 +728,17 @@ fn session_server_supported_by_capabilities(server: &SessionMcpServer, capabilit
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aionui_db::models::AgentProfileRow;
     use aionui_realtime::BroadcastEventBus;
     use aionui_runtime::init as init_runtime;
+    use async_trait::async_trait;
     use std::sync::OnceLock;
     use std::{mem, path::PathBuf};
 
     fn ctx_for(user_id: &str, roles: Vec<String>, conversation_id: &str) -> FactoryContext {
         FactoryContext {
             project_id: None,
+            profile_id: None,
             conversation_id: conversation_id.to_owned(),
             user_id: user_id.to_owned(),
             roles,
@@ -643,38 +747,153 @@ mod tests {
         }
     }
 
+    // -- mocks de perfiles/ACL para el gate (tarea A2) -----------------------
+
+    struct MockProfileRepo {
+        rows: Vec<AgentProfileRow>,
+    }
+
+    #[async_trait]
+    impl IAgentProfileRepository for MockProfileRepo {
+        async fn create(&self, _params: aionui_db::NewAgentProfile) -> Result<AgentProfileRow, aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn get(&self, id: &str) -> Result<Option<AgentProfileRow>, aionui_db::DbError> {
+            Ok(self.rows.iter().find(|r| r.id == id).cloned())
+        }
+        async fn get_by_name(&self, name: &str) -> Result<Option<AgentProfileRow>, aionui_db::DbError> {
+            Ok(self.rows.iter().find(|r| r.name == name).cloned())
+        }
+        async fn list_all(&self, _include_inactive: bool) -> Result<Vec<AgentProfileRow>, aionui_db::DbError> {
+            Ok(self.rows.clone())
+        }
+        async fn list_by_ids(
+            &self,
+            _ids: &[String],
+            _include_inactive: bool,
+        ) -> Result<Vec<AgentProfileRow>, aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn update(&self, _id: &str, _update: aionui_db::AgentProfileUpdate) -> Result<(), aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn delete(&self, _id: &str) -> Result<(), aionui_db::DbError> {
+            unimplemented!()
+        }
+    }
+
+    /// ACL falsa: `grants` son pares `(user_or_role, profile_row_id)` con acceso.
+    struct MockAclRepo {
+        grants: Vec<(String, String)>,
+    }
+
+    #[async_trait]
+    impl IResourceAclRepository for MockAclRepo {
+        async fn is_member(
+            &self,
+            resource_type: &str,
+            resource_id: &str,
+            user_id: &str,
+        ) -> Result<bool, aionui_db::DbError> {
+            assert_eq!(resource_type, "agent_profile");
+            Ok(self.grants.iter().any(|(p, rid)| p == user_id && rid == resource_id))
+        }
+        async fn get_perm(
+            &self,
+            _resource_type: &str,
+            _resource_id: &str,
+            _user_id: &str,
+        ) -> Result<Option<String>, aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn grant(
+            &self,
+            _resource_type: &str,
+            _resource_id: &str,
+            _user_id: &str,
+            _perm: &str,
+        ) -> Result<(), aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn revoke(
+            &self,
+            _resource_type: &str,
+            _resource_id: &str,
+            _user_id: &str,
+        ) -> Result<(), aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn try_revoke_project_member(
+            &self,
+            _project_id: &str,
+            _user_id: &str,
+        ) -> Result<aionui_db::MemberRevoke, aionui_db::DbError> {
+            unimplemented!()
+        }
+        async fn list_principals(
+            &self,
+            _resource_type: &str,
+            _resource_id: &str,
+        ) -> Result<Vec<aionui_db::models::ResourceAclRow>, aionui_db::DbError> {
+            unimplemented!()
+        }
+    }
+
+    fn profile_row(id: &str, name: &str, mcp_allowlist: &[&str], is_active: bool) -> AgentProfileRow {
+        let allowlist_json = serde_json::to_string(mcp_allowlist).unwrap();
+        AgentProfileRow {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            label: name.to_owned(),
+            definition: format!(
+                r#"{{"name":"{name}","label":"{name}","engines":["hermes"],"soul_md":"test","model":{{"primary":"m","fallbacks":[]}},"mcp_allowlist":{allowlist_json},"skills":[],"kb_scope":[],"channels":[],"caps":{{"soft_usd":1.0,"hard_usd":2.0,"period":"month"}},"acl":{{"etiqueta":"interno","roles":[]}}}}"#
+            ),
+            is_active,
+            created_at: 0,
+            updated_at: 0,
+        }
+    }
+
     // Fase 2 #2: con proyecto real, el token de identidad lleva ese project_id
     // (no el conversation_id de fallback).
-    #[test]
-    fn identity_token_carries_real_project_id() {
+    #[tokio::test]
+    async fn identity_token_carries_real_project_id() {
         let ri = RequestIdentityService::from_seed([9u8; 32]);
         let mut env: Vec<aionui_common::EnvVar> = Vec::new();
         let now = 1_000_000;
         let ctx = FactoryContext {
             project_id: Some("proj_dc".to_string()),
+            profile_id: None,
             conversation_id: "conv-1".to_owned(),
             user_id: "user-1".to_owned(),
             roles: vec!["tecnica".to_string()],
             workspace: "/tmp/ws".to_owned(),
             is_custom_workspace: false,
         };
-        inject_identity_env(&mut env, Some(&ri), &ctx, now);
+        inject_identity_env(&mut env, Some(&ri), None, None, &ctx, now)
+            .await
+            .unwrap();
         let tok = env.iter().find(|e| e.name == "AION_IDENTITY_TOKEN").expect("token");
         let claims = ri.verify(&tok.value, now + 1000).unwrap();
         assert_eq!(claims.project_id.as_deref(), Some("proj_dc"));
+        assert_eq!(claims.profile_id, None);
     }
 
-    #[test]
-    fn injects_verifiable_identity_token() {
+    #[tokio::test]
+    async fn injects_verifiable_identity_token() {
         let ri = RequestIdentityService::from_seed([7u8; 32]);
         let mut env: Vec<aionui_common::EnvVar> = Vec::new();
         let now = 1_000_000;
         inject_identity_env(
             &mut env,
             Some(&ri),
+            None,
+            None,
             &ctx_for("user-1", vec!["ingenieria".to_string()], "conv-1"),
             now,
-        );
+        )
+        .await
+        .unwrap();
 
         let tok = env
             .iter()
@@ -685,6 +904,7 @@ mod tests {
         assert_eq!(claims.roles, vec!["ingenieria".to_string()]);
         // Sin proyecto → fallback prefijado para no colisionar con un project_id real.
         assert_eq!(claims.project_id.as_deref(), Some("conv:conv-1"));
+        assert_eq!(claims.profile_id, None);
         assert_eq!(claims.scopes, Vec::<String>::new());
         assert!(!claims.jti.is_empty());
         assert!(
@@ -693,20 +913,177 @@ mod tests {
         );
     }
 
-    #[test]
-    fn no_identity_token_without_user_id() {
+    #[tokio::test]
+    async fn no_identity_token_without_user_id() {
         let ri = RequestIdentityService::from_seed([7u8; 32]);
         let mut env: Vec<aionui_common::EnvVar> = Vec::new();
         // user_id en blanco (solo espacios) tampoco emite (guard con trim).
-        inject_identity_env(&mut env, Some(&ri), &ctx_for("   ", vec![], "conv-1"), 1_000);
+        inject_identity_env(
+            &mut env,
+            Some(&ri),
+            None,
+            None,
+            &ctx_for("   ", vec![], "conv-1"),
+            1_000,
+        )
+        .await
+        .unwrap();
         assert!(env.is_empty());
     }
 
-    #[test]
-    fn no_identity_token_without_service() {
+    #[tokio::test]
+    async fn no_identity_token_without_service() {
         let mut env: Vec<aionui_common::EnvVar> = Vec::new();
-        inject_identity_env(&mut env, None, &ctx_for("user-1", vec![], "conv-1"), 1_000);
+        inject_identity_env(&mut env, None, None, None, &ctx_for("user-1", vec![], "conv-1"), 1_000)
+            .await
+            .unwrap();
         assert!(env.is_empty());
+    }
+
+    // -- gate + scopes desde mcp_allowlist (tarea A2) ------------------------
+
+    #[tokio::test]
+    async fn profile_id_populates_scopes_from_mcp_allowlist_when_granted() {
+        let ri = RequestIdentityService::from_seed([11u8; 32]);
+        let profile_repo = MockProfileRepo {
+            rows: vec![profile_row("prof-1", "ingenieria", &["ingelmec-kb", "zoho-mail"], true)],
+        };
+        let acl_repo = MockAclRepo {
+            grants: vec![("user-1".to_string(), "prof-1".to_string())],
+        };
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let now = 1_000_000;
+        let mut ctx = ctx_for("user-1", vec!["tecnica".to_string()], "conv-1");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, now)
+            .await
+            .unwrap();
+
+        let tok = env.iter().find(|e| e.name == "AION_IDENTITY_TOKEN").expect("token");
+        let claims = ri.verify(&tok.value, now + 1000).unwrap();
+        assert_eq!(claims.profile_id.as_deref(), Some("ingenieria"));
+        assert_eq!(
+            claims.scopes,
+            vec!["mcp:ingelmec-kb".to_string(), "mcp:zoho-mail".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_id_grants_via_role_membership() {
+        let ri = RequestIdentityService::from_seed([12u8; 32]);
+        let profile_repo = MockProfileRepo {
+            rows: vec![profile_row("prof-1", "ingenieria", &["ingelmec-kb"], true)],
+        };
+        // Grant al ROL, no al usuario directo.
+        let acl_repo = MockAclRepo {
+            grants: vec![("ingenieria".to_string(), "prof-1".to_string())],
+        };
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("user-2", vec!["ingenieria".to_string()], "conv-2");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, 1_000)
+            .await
+            .unwrap();
+        assert!(env.iter().any(|e| e.name == "AION_IDENTITY_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn profile_id_admin_bypasses_grant() {
+        let ri = RequestIdentityService::from_seed([13u8; 32]);
+        let profile_repo = MockProfileRepo {
+            rows: vec![profile_row("prof-1", "ingenieria", &["ingelmec-kb"], true)],
+        };
+        let acl_repo = MockAclRepo { grants: vec![] }; // sin grants
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("admin-1", vec!["admin".to_string()], "conv-3");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, 1_000)
+            .await
+            .unwrap();
+        assert!(env.iter().any(|e| e.name == "AION_IDENTITY_TOKEN"));
+    }
+
+    #[tokio::test]
+    async fn profile_id_denies_without_grant() {
+        let ri = RequestIdentityService::from_seed([14u8; 32]);
+        let profile_repo = MockProfileRepo {
+            rows: vec![profile_row("prof-1", "ingenieria", &["ingelmec-kb"], true)],
+        };
+        let acl_repo = MockAclRepo { grants: vec![] }; // sin grants para nadie
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("user-3", vec!["comercial".to_string()], "conv-4");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        let err = inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, 1_000)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
+        assert!(env.is_empty(), "agent must not receive a token when denied");
+    }
+
+    #[tokio::test]
+    async fn profile_id_denies_unknown_profile() {
+        let ri = RequestIdentityService::from_seed([15u8; 32]);
+        let profile_repo = MockProfileRepo { rows: vec![] };
+        let acl_repo = MockAclRepo { grants: vec![] };
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("user-4", vec![], "conv-5");
+        ctx.profile_id = Some("does-not-exist".to_string());
+
+        let err = inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, 1_000)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_id_denies_inactive_profile() {
+        let ri = RequestIdentityService::from_seed([16u8; 32]);
+        let profile_repo = MockProfileRepo {
+            rows: vec![profile_row("prof-1", "ingenieria", &["ingelmec-kb"], false)],
+        };
+        let acl_repo = MockAclRepo {
+            grants: vec![("user-5".to_string(), "prof-1".to_string())],
+        };
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("user-5", vec![], "conv-6");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        let err = inject_identity_env(&mut env, Some(&ri), Some(&profile_repo), Some(&acl_repo), &ctx, 1_000)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn profile_id_denies_without_repos_wired() {
+        let ri = RequestIdentityService::from_seed([17u8; 32]);
+        let mut env: Vec<aionui_common::EnvVar> = Vec::new();
+        let mut ctx = ctx_for("user-6", vec!["admin".to_string()], "conv-7");
+        ctx.profile_id = Some("ingenieria".to_string());
+
+        // Incluso admin debe denegarse fail-closed si los repos no están
+        // wireados: sin `profile_repo`/`acl_repo` no hay forma de VERIFICAR
+        // que el perfil existe, así que no se puede confiar en `is_admin`.
+        let err = inject_identity_env(&mut env, Some(&ri), None, None, &ctx, 1_000)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, AgentError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
     }
 
     fn make_row(
@@ -937,9 +1314,6 @@ mod tests {
     }
 
     // -- load_user_mcp_servers integration -----------------------------------
-
-    use async_trait::async_trait;
-    use std::sync::Arc;
 
     struct MockRepo {
         rows: Vec<McpServerRow>,

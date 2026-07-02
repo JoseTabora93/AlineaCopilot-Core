@@ -25,6 +25,17 @@ pub struct IdentityClaims {
     /// Proyecto activo (RBAC eje 3); `None` fuera de un proyecto.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
+    /// Perfil de agente activo (Motor MULTI-PERFIL — tarea A2). `None` cuando
+    /// la sesión no tiene perfil asignado (comportamiento legado intacto:
+    /// `scopes` queda vacío/deny-by-default como antes de esta tarea).
+    ///
+    /// `#[serde(default)]` en deserialización: tokens emitidos ANTES de esta
+    /// tarea no tienen esta clave en el JSON firmado y deben seguir
+    /// verificando (retro-compatibilidad — la firma Ed25519 cubre el payload
+    /// tal cual se emitió, así que un campo `default` en el struct de destino
+    /// no rompe la verificación de tokens viejos).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<String>,
     /// Scopes otorgados a este request.
     pub scopes: Vec<String>,
     /// Expiración en unix-ms.
@@ -86,11 +97,13 @@ impl RequestIdentityService {
     }
 
     /// Atajo: emite con `exp = now_ms + ttl_ms` y un `jti` nuevo (uuid v7).
+    #[allow(clippy::too_many_arguments)]
     pub fn issue_for(
         &self,
         user_id: impl Into<String>,
         roles: Vec<String>,
         project_id: Option<String>,
+        profile_id: Option<String>,
         scopes: Vec<String>,
         now_ms: i64,
         ttl_ms: i64,
@@ -99,6 +112,7 @@ impl RequestIdentityService {
             user_id: user_id.into(),
             roles,
             project_id,
+            profile_id,
             scopes,
             exp: now_ms + ttl_ms,
             jti: uuid::Uuid::now_v7().to_string(),
@@ -140,6 +154,7 @@ mod tests {
                 "u1",
                 vec!["ingenieria".into()],
                 Some("p1".into()),
+                None,
                 vec!["read".into()],
                 1_000,
                 60_000,
@@ -149,13 +164,76 @@ mod tests {
         assert_eq!(claims.user_id, "u1");
         assert_eq!(claims.roles, vec!["ingenieria".to_string()]);
         assert_eq!(claims.project_id.as_deref(), Some("p1"));
+        assert_eq!(claims.profile_id, None);
         assert!(!claims.jti.is_empty());
+    }
+
+    // Tarea A2 — round-trip CON profile_id: el claim viaja firmado y se
+    // recupera intacto tras verificar.
+    #[test]
+    fn round_trip_with_profile_id() {
+        let s = svc();
+        let token = s
+            .issue_for(
+                "u1",
+                vec!["ingenieria".into()],
+                Some("p1".into()),
+                Some("ingenieria".into()),
+                vec!["mcp:ingelmec-kb".into()],
+                1_000,
+                60_000,
+            )
+            .unwrap();
+        let claims = s.verify(&token, 1_500).unwrap();
+        assert_eq!(claims.profile_id.as_deref(), Some("ingenieria"));
+        assert_eq!(claims.scopes, vec!["mcp:ingelmec-kb".to_string()]);
+    }
+
+    // Tarea A2 — retro-compatibilidad: un token firmado ANTES de que
+    // `profile_id` existiera (JSON del payload sin esa clave) debe seguir
+    // verificando OK, con `profile_id = None`. Se construye el payload a mano
+    // (sin pasar por `IdentityClaims`, que ya tiene el campo) para simular
+    // fielmente un token viejo, y se firma con el mismo signing_key que usa
+    // `verify` para no acoplar el test a la representación interna del struct.
+    #[test]
+    fn old_token_without_profile_id_field_still_verifies() {
+        let s = svc();
+        #[derive(Serialize)]
+        struct LegacyIdentityClaims {
+            user_id: String,
+            roles: Vec<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            project_id: Option<String>,
+            scopes: Vec<String>,
+            exp: i64,
+            jti: String,
+        }
+        let legacy = LegacyIdentityClaims {
+            user_id: "u1".into(),
+            roles: vec!["ingenieria".into()],
+            project_id: Some("p1".into()),
+            scopes: vec!["read".into()],
+            exp: 1_000 + 60_000,
+            jti: uuid::Uuid::now_v7().to_string(),
+        };
+        let payload = serde_json::to_vec(&legacy).unwrap();
+        assert!(
+            !String::from_utf8_lossy(&payload).contains("profile_id"),
+            "legacy payload must not contain profile_id"
+        );
+        let sig = s.signing_key.sign(&payload);
+        let token = format!("{}.{}", B64.encode(&payload), B64.encode(sig.to_bytes()));
+
+        let claims = s.verify(&token, 1_500).unwrap();
+        assert_eq!(claims.user_id, "u1");
+        assert_eq!(claims.project_id.as_deref(), Some("p1"));
+        assert_eq!(claims.profile_id, None);
     }
 
     #[test]
     fn rejects_tampered_signature() {
         let s = svc();
-        let token = s.issue_for("u1", vec![], None, vec![], 1_000, 60_000).unwrap();
+        let token = s.issue_for("u1", vec![], None, None, vec![], 1_000, 60_000).unwrap();
         let (p, _sig) = token.split_once('.').unwrap();
         let forged = format!("{p}.{}", B64.encode([0u8; 64]));
         assert!(matches!(s.verify(&forged, 1_500), Err(IdentityError::BadSignature)));
@@ -164,7 +242,7 @@ mod tests {
     #[test]
     fn rejects_expired() {
         let s = svc();
-        let token = s.issue_for("u1", vec![], None, vec![], 1_000, 10).unwrap();
+        let token = s.issue_for("u1", vec![], None, None, vec![], 1_000, 10).unwrap();
         assert!(matches!(s.verify(&token, 2_000), Err(IdentityError::Expired)));
     }
 
@@ -172,7 +250,7 @@ mod tests {
     fn wrong_key_fails() {
         let a = RequestIdentityService::from_seed([1u8; 32]);
         let b = RequestIdentityService::from_seed([2u8; 32]);
-        let token = a.issue_for("u1", vec![], None, vec![], 1_000, 60_000).unwrap();
+        let token = a.issue_for("u1", vec![], None, None, vec![], 1_000, 60_000).unwrap();
         assert!(b.verify(&token, 1_500).is_err());
     }
 }
