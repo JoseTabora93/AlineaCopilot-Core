@@ -16,10 +16,10 @@ pub use error::DbError;
 pub use models::{
     AgentMetadataRow, AgentProfileRow, AssistantDefinitionRow, AssistantOverlayRow, AssistantOverrideRow,
     AssistantPreferenceRow, AssistantRow, ConversationArtifactRow, ConversationAssistantSnapshotRow,
-    CreateAssistantParams, PipelineTemplateRow, ProjectRow, ResourceAclRow, TaskArtifactRow, TaskHandoffLogRow,
-    TaskRow, UpdateAgentHandshakeParams, UpdateAssistantParams, UpsertAgentMetadataParams,
-    UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
-    UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
+    CreateAssistantParams, CreatedServiceToken, IngestResult, IngestUsageEvent, PipelineTemplateRow, ProjectRow,
+    ResourceAclRow, ServiceTokenRow, TaskArtifactRow, TaskHandoffLogRow, TaskRow, UpdateAgentHandshakeParams,
+    UpdateAssistantParams, UpsertAgentMetadataParams, UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams,
+    UpsertAssistantPreferenceParams, UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
 };
 pub use profile_schema::ProfileSchemaError;
 pub use repository::channel::UpdatePluginStatusParams;
@@ -46,8 +46,12 @@ pub use repository::{
     SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteCronRepository, SqliteMcpServerRepository,
     SqliteOAuthTokenRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteRemoteAgentRepository,
     SqliteResourceAclRepository, SqliteSettingsRepository, SqliteTaskRepository, SqliteTeamRepository,
-    SqliteUsageRepository, SqliteUserRepository, TaskUpdate, rebuild_legacy_assistant_mirror,
+    SqliteUsageRepository, SqliteUserRepository, TaskUpdate, UsageQueryFilters, rebuild_legacy_assistant_mirror,
 };
+
+// Ingest de emisores externos (Fase ledger — tarea C1): hash de service tokens,
+// reusado por el router para validar el header `Authorization: Bearer`.
+pub use repository::sqlite_usage::hash_service_token;
 
 // Re-export sqlx pool type for downstream crates
 pub use sqlx::SqlitePool;
