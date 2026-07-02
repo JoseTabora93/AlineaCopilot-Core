@@ -246,6 +246,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let servers = resolve_mcp_servers(&config, "conv-1", Vec::new());
         assert_eq!(servers.len(), 1);
@@ -278,6 +279,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let servers = resolve_mcp_servers(&config, "conv-1", Vec::new());
         assert_eq!(servers.len(), 1);
@@ -323,6 +325,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let servers = resolve_mcp_servers(&config, "conv-1", Vec::new());
         assert!(servers.is_empty());
@@ -352,6 +355,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let user = vec![user_stdio("ctx7"), user_stdio("playwright")];
         let servers = resolve_mcp_servers(&config, "conv-1", user);
@@ -393,6 +397,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let user = vec![user_stdio("ctx7")];
         let servers = resolve_mcp_servers(&config, "conv-1", user);
@@ -431,6 +436,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let user = vec![user_stdio("ctx7")];
         let servers = resolve_mcp_servers(&config, "conv-1", user);
@@ -467,6 +473,7 @@ mod tests {
             mcp_server_ids: None,
             session_mcp_servers: vec![],
             user_id: None,
+            profile_id: None,
         };
         let servers = resolve_mcp_servers(&config, "conv-1", Vec::new());
         assert!(servers.is_empty());

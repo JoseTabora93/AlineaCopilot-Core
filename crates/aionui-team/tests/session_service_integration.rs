@@ -363,6 +363,7 @@ impl TeamConversationProvisioningPort for FakeConversationPorts {
         let context = AgentSessionContext {
             conversation: ConversationContext {
                 project_id: None,
+                profile_id: None,
                 conversation_id: row.id.clone(),
                 user_id: row.user_id,
                 roles: vec![],
@@ -870,6 +871,7 @@ fn test_acp_build_options(conversation_id: String, workspace: String) -> BuildTa
     BuildTaskOptions::new(AgentSessionContext {
         conversation: ConversationContext {
             project_id: None,
+            profile_id: None,
             conversation_id,
             user_id: "user1".into(),
             roles: vec![],

@@ -191,6 +191,30 @@ pub fn validate_profile_definition(raw: &str, expected_name: &str) -> Result<(),
     Ok(())
 }
 
+/// Extrae `definition.mcp_allowlist` de un `agent_profiles.definition` YA
+/// validado (tarea A2 — emisión del token de identidad con perfil,
+/// `crates/aionui-ai-agent/src/factory/acp.rs`).
+///
+/// Deliberadamente NO reutiliza `ProfileV1` (privado a este módulo, sus
+/// campos son `#[allow(dead_code)]` porque hoy solo se usan para validar
+/// estructura) — este parseo es de solo lectura y tolerante: si `raw` no es
+/// JSON válido o `mcp_allowlist` falta/tiene el tipo incorrecto, devuelve
+/// `Vec::new()` en lugar de propagar un error. La fila ya pasó
+/// `validate_profile_definition` al crearse/actualizarse, así que esto solo
+/// protege contra un futuro drift de esquema sin tumbar la emisión del token
+/// (fail-closed en la SEMÁNTICA de scopes — lista vacía sigue siendo
+/// deny-by-default — no en la disponibilidad del agente).
+pub fn extract_mcp_allowlist(raw: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    value
+        .get("mcp_allowlist")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,5 +388,25 @@ mod tests {
             "acl": { "etiqueta": "interno", "roles": ["comercial", "tecnica", "admin"] }
         }"##;
         assert!(validate_profile_definition(preventa, "preventa").is_ok());
+    }
+
+    // Tarea A2 — extracción de mcp_allowlist para poblar scopes del token.
+    #[test]
+    fn extract_mcp_allowlist_returns_configured_servers() {
+        let json = valid_json("ingenieria").replace(
+            r#""mcp_allowlist": [],"#,
+            r#""mcp_allowlist": ["ingelmec-kb", "zoho-mail"],"#,
+        );
+        assert_eq!(
+            extract_mcp_allowlist(&json),
+            vec!["ingelmec-kb".to_string(), "zoho-mail".to_string()]
+        );
+    }
+
+    #[test]
+    fn extract_mcp_allowlist_empty_when_missing_or_invalid() {
+        assert_eq!(extract_mcp_allowlist("{not json"), Vec::<String>::new());
+        assert_eq!(extract_mcp_allowlist(r#"{"other":1}"#), Vec::<String>::new());
+        assert_eq!(extract_mcp_allowlist(&valid_json("x")), Vec::<String>::new());
     }
 }

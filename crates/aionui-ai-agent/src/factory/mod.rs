@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use aionui_api_types::GuideMcpConfig;
 use aionui_auth::RequestIdentityService;
-use aionui_db::{IMcpServerRepository, IProviderRepository};
+use aionui_db::{IAgentProfileRepository, IMcpServerRepository, IProviderRepository, IResourceAclRepository};
 use aionui_realtime::EventBroadcaster;
 use futures_util::FutureExt;
 
@@ -48,6 +48,21 @@ pub struct AgentFactoryDeps {
     /// factory ACP inyecta `AION_IDENTITY_TOKEN`/`AION_IDENTITY_PUBKEY` en el
     /// env del proceso del agente. `None` en tests/paths sin identidad.
     pub request_identity: Option<Arc<RequestIdentityService>>,
+    /// Perfiles de agente (Motor MULTI-PERFIL — tarea A2). Cuando la sesión
+    /// trae `profile_id`, la factory ACP lo resuelve por `name` aquí para
+    /// poblar `scopes` desde `definition.mcp_allowlist`. `None` en
+    /// tests/paths que no ejercitan perfiles — en ese caso una sesión con
+    /// `profile_id` falla cerrado (ver `resolve_profile_scopes`).
+    pub profile_repo: Option<Arc<dyn IAgentProfileRepository>>,
+    /// ACL de recursos (Motor MULTI-PERFIL — tarea A2). Gate fail-closed:
+    /// antes de emitir el token con `profile_id`, se verifica que el usuario
+    /// (o alguno de sus roles) tenga membresía `resource_acl` con
+    /// `resource_type='agent_profile'` sobre ese perfil (mismo patrón que
+    /// `GET /api/profiles`, `crates/aionui-app/src/router/profiles.rs`). Los
+    /// admins (`roles` contiene `"admin"`) pasan sin grant explícito,
+    /// consistente con `list_visible_profiles`. `None` → mismo fail-closed
+    /// que `profile_repo: None`.
+    pub resource_acl_repo: Option<Arc<dyn IResourceAclRepository>>,
 }
 
 /// Build a production agent factory that dispatches to concrete agent types.
