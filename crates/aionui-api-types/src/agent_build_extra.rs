@@ -73,6 +73,12 @@ pub struct AcpBuildExtra {
     pub session_mcp_servers: Vec<SessionMcpServer>,
     #[serde(default)]
     pub user_id: Option<String>,
+    /// Perfil de agente de la sesión (Motor MULTI-PERFIL — tarea A2), por
+    /// `name` de `agent_profiles`. `None` = sin perfil (comportamiento legado
+    /// intacto: el token de identidad se emite sin `profile_id` y con
+    /// `scopes` vacío, igual que antes de esta tarea).
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 /// Aionrs-specific fields extracted from `extra` in build task options.

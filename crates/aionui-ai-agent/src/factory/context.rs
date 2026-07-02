@@ -15,6 +15,11 @@ pub(super) struct FactoryContext {
     /// Proyecto de la conversación (Fase 2 #2). Va como `project_id` del token
     /// firmado; `None` si la conversación no pertenece a ningún proyecto.
     pub project_id: Option<String>,
+    /// Perfil de agente de la sesión (Motor MULTI-PERFIL — tarea A2), por
+    /// `name` de `agent_profiles`. `None` = comportamiento legado intacto.
+    /// La factory ACP debe verificar acceso (gate `resource_acl`) ANTES de
+    /// emitir el token cuando este campo está presente.
+    pub profile_id: Option<String>,
     pub workspace: String,
     pub is_custom_workspace: bool,
 }
@@ -26,6 +31,7 @@ impl FactoryContext {
             user_id: context.conversation.user_id.clone(),
             roles: context.conversation.roles.clone(),
             project_id: context.conversation.project_id.clone(),
+            profile_id: context.conversation.profile_id.clone(),
             workspace: context.workspace.path.clone(),
             is_custom_workspace: context.workspace.is_custom,
         })
