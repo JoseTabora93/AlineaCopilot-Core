@@ -14,12 +14,13 @@ use aionui_auth::{
 use aionui_common::OnConversationDelete;
 use aionui_conversation::{ConversationService, runtime_state::ConversationRuntimeStateService};
 use aionui_db::{
-    Database, IAcpSessionRepository, IAgentMetadataRepository, IAgentProfileRepository, IConversationRepository,
-    IMcpServerRepository, IProjectRepository, IResourceAclRepository, ITaskRepository, IUsageRepository,
-    IUserRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAgentProfileRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository,
-    SqliteConversationRepository, SqliteMcpServerRepository, SqliteProjectRepository, SqliteProviderRepository,
-    SqliteResourceAclRepository, SqliteTaskRepository, SqliteUsageRepository, SqliteUserRepository,
+    Database, IAcpSessionRepository, IAgentMetadataRepository, IAgentProfileRepository,
+    IAssistantDefinitionRepository, IConversationRepository, IMcpServerRepository, IProjectRepository,
+    IResourceAclRepository, ITaskRepository, IUsageRepository, IUserRepository, SqliteAcpSessionRepository,
+    SqliteAgentMetadataRepository, SqliteAgentProfileRepository, SqliteAssistantDefinitionRepository,
+    SqliteAssistantOverlayRepository, SqliteAssistantPreferenceRepository, SqliteConversationRepository,
+    SqliteMcpServerRepository, SqliteProjectRepository, SqliteProviderRepository, SqliteResourceAclRepository,
+    SqliteTaskRepository, SqliteUsageRepository, SqliteUserRepository,
 };
 use aionui_realtime::{BroadcastEventBus, WebSocketManager};
 use aionui_team::GuideMcpServer;
@@ -41,6 +42,11 @@ pub struct AppServices {
     pub task_repo: Arc<dyn ITaskRepository>,
     /// Perfiles de agente (Motor MULTI-PERFIL — plan hermes-alinea, tarea A1).
     pub profile_repo: Arc<dyn IAgentProfileRepository>,
+    /// Definiciones unificadas de assistants (`assistant_definitions`).
+    /// Compartido entre `ConversationService` (resolución de assistant activo
+    /// en el turno) y el compilador perfil→assistant (motor `"copilot"`,
+    /// tarea A8), que materializa perfiles con `source='generated'` aquí.
+    pub assistant_definition_repo: Arc<dyn IAssistantDefinitionRepository>,
     pub cookie_config: Arc<CookieConfig>,
     pub qr_token_store: Arc<QrTokenStore>,
     pub ws_manager: Arc<WebSocketManager>,
@@ -98,6 +104,7 @@ impl AppServices {
             resource_acl_repo: self.resource_acl_repo.clone(),
             multiuser: self.enforce_file_scope,
             task_manager_delete_hook: self.task_manager_delete_hook.clone(),
+            assistant_definition_repo: self.assistant_definition_repo.clone(),
         });
         self
     }
@@ -125,6 +132,8 @@ impl AppServices {
         let task_repo: Arc<dyn ITaskRepository> = Arc::new(SqliteTaskRepository::new(database.pool().clone()));
         let profile_repo: Arc<dyn IAgentProfileRepository> =
             Arc::new(SqliteAgentProfileRepository::new(database.pool().clone()));
+        let assistant_definition_repo: Arc<dyn IAssistantDefinitionRepository> =
+            Arc::new(SqliteAssistantDefinitionRepository::new(database.pool().clone()));
 
         // Resolve JWT secret: env var → system user db field → random generation
         let env_secret = std::env::var("JWT_SECRET").ok();
@@ -260,6 +269,7 @@ impl AppServices {
             resource_acl_repo: resource_acl_repo.clone(),
             multiuser: enforce_file_scope,
             task_manager_delete_hook: Some(task_manager_delete_hook.clone()),
+            assistant_definition_repo: assistant_definition_repo.clone(),
         });
 
         Ok(Self {
@@ -271,6 +281,7 @@ impl AppServices {
             resource_acl_repo,
             task_repo,
             profile_repo,
+            assistant_definition_repo,
             cookie_config: Arc::new(CookieConfig::from_env()),
             qr_token_store: Arc::new(QrTokenStore::new()),
             ws_manager: Arc::new(WebSocketManager::new()),
@@ -309,6 +320,7 @@ struct ConversationServiceDeps<'a> {
     resource_acl_repo: Arc<dyn IResourceAclRepository>,
     multiuser: bool,
     task_manager_delete_hook: Option<Arc<dyn OnConversationDelete>>,
+    assistant_definition_repo: Arc<dyn IAssistantDefinitionRepository>,
 }
 
 fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> ConversationService {
@@ -330,9 +342,7 @@ fn build_conversation_service(deps: ConversationServiceDeps<'_>) -> Conversation
     service.with_usage_repo(deps.usage_repo);
     service.with_resource_acl_repo(deps.resource_acl_repo);
     service.with_mcp_server_repo(Arc::new(SqliteMcpServerRepository::new(deps.database.pool().clone())));
-    service.with_assistant_definition_repo(Arc::new(SqliteAssistantDefinitionRepository::new(
-        deps.database.pool().clone(),
-    )));
+    service.with_assistant_definition_repo(deps.assistant_definition_repo);
     service.with_assistant_state_repo(Arc::new(SqliteAssistantOverlayRepository::new(
         deps.database.pool().clone(),
     )));

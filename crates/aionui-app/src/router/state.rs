@@ -7,18 +7,18 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aionui_ai_agent::{AgentRouterState, AgentService, RemoteAgentRouterState, RemoteAgentService};
-use aionui_assistant::{AssistantRouterState, AssistantService, BuiltinAssistantRegistry};
+use aionui_assistant::{AssistantRouterState, AssistantService, BuiltinAssistantRegistry, ProfileVisibilityGate};
 use aionui_auth::extract_token_from_ws_headers;
 use aionui_channel::ChannelRouterState;
 use aionui_conversation::{ConversationRouterState, ConversationService};
 use aionui_cron::{CronEventEmitter, CronRouterState};
 use aionui_db::{
-    IAcpSessionRepository, IAgentMetadataRepository, IAssistantDefinitionRepository, IAssistantOverlayRepository,
-    IAssistantOverrideRepository, IAssistantPreferenceRepository, IAssistantRepository, IConversationRepository,
-    IProviderRepository, SqliteAcpSessionRepository, SqliteAgentMetadataRepository,
-    SqliteAssistantDefinitionRepository, SqliteAssistantOverlayRepository, SqliteAssistantOverrideRepository,
-    SqliteAssistantPreferenceRepository, SqliteAssistantRepository, SqliteClientPreferenceRepository,
-    SqliteConversationRepository, SqliteProviderRepository, SqliteRemoteAgentRepository, SqliteSettingsRepository,
+    IAcpSessionRepository, IAgentMetadataRepository, IAssistantOverlayRepository, IAssistantOverrideRepository,
+    IAssistantPreferenceRepository, IAssistantRepository, IConversationRepository, IProviderRepository,
+    SqliteAcpSessionRepository, SqliteAgentMetadataRepository, SqliteAssistantOverlayRepository,
+    SqliteAssistantOverrideRepository, SqliteAssistantPreferenceRepository, SqliteAssistantRepository,
+    SqliteClientPreferenceRepository, SqliteConversationRepository, SqliteProviderRepository,
+    SqliteRemoteAgentRepository, SqliteSettingsRepository,
 };
 use aionui_extension::{
     AssistantRuleDispatcher, ExtensionRegistry, ExtensionRouterState, ExtensionStateStore, ExternalPathsManager,
@@ -291,8 +291,11 @@ pub async fn build_module_states(
 /// Build the default `AssistantRouterState` from application services.
 pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
     let pool = services.database.pool().clone();
-    let definition_repo: Arc<dyn IAssistantDefinitionRepository> =
-        Arc::new(SqliteAssistantDefinitionRepository::new(pool.clone()));
+    // Reuse the single `assistant_definition_repo` instance that
+    // `AppServices` already builds (shared with `ConversationService` and
+    // the profile→assistant compiler, tarea A8) instead of constructing a
+    // second one pinned to the same pool.
+    let definition_repo = services.assistant_definition_repo.clone();
     let state_repo: Arc<dyn IAssistantOverlayRepository> =
         Arc::new(SqliteAssistantOverlayRepository::new(pool.clone()));
     let preference_repo: Arc<dyn IAssistantPreferenceRepository> =
@@ -313,7 +316,7 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
     let service = Arc::new(AssistantService::new(
         pool,
         aionui_assistant::service::AssistantServiceDeps {
-            definition_repo,
+            definition_repo: definition_repo.clone(),
             state_repo,
             preference_repo,
             repo,
@@ -323,7 +326,18 @@ pub fn build_assistant_state(services: &AppServices) -> AssistantRouterState {
         },
         services.data_dir.clone(),
     ));
-    AssistantRouterState { service }
+    // Gate de visibilidad de assistants gestionados (motor `"copilot"`,
+    // tarea A8): replica `list_visible_profiles` (tarea A1) para el
+    // subconjunto de assistants materializados desde un `agent_profile`.
+    let profile_visibility = Some(ProfileVisibilityGate {
+        profile_repo: services.profile_repo.clone(),
+        acl_repo: services.resource_acl_repo.clone(),
+        definition_repo,
+    });
+    AssistantRouterState {
+        service,
+        profile_visibility,
+    }
 }
 
 /// Build the default `SystemRouterState` from application services.

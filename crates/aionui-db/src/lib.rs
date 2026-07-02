@@ -21,7 +21,7 @@ pub use models::{
     UpsertAssistantDefinitionParams, UpsertAssistantOverlayParams, UpsertAssistantPreferenceParams,
     UpsertConversationAssistantSnapshotParams, UpsertOverrideParams,
 };
-pub use profile_schema::ProfileSchemaError;
+pub use profile_schema::{ProfileModel, ProfileSchemaError, ProfileV1, parse_profile_definition};
 pub use repository::channel::UpdatePluginStatusParams;
 pub use repository::conversation::{
     ConversationFilters, ConversationRowUpdate, MessageRowUpdate, MessageSearchRow, SortOrder,
