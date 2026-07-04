@@ -44,9 +44,9 @@ async fn admin_can_create_list_get_update_delete_profile() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "ingenieria",
+                "name": "test-ingenieria",
                 "label": "Ingeniería (role-pack)",
-                "definition": valid_definition("ingenieria"),
+                "definition": valid_definition("test-ingenieria"),
             }),
             &token,
             &csrf,
@@ -56,10 +56,13 @@ async fn admin_can_create_list_get_update_delete_profile() {
     assert_eq!(resp.status(), StatusCode::OK, "create should succeed");
     let body = body_json(resp).await;
     let id = body["data"]["id"].as_str().unwrap().to_string();
-    assert_eq!(body["data"]["name"], "ingenieria");
+    assert_eq!(body["data"]["name"], "test-ingenieria");
     assert_eq!(body["data"]["is_active"], true);
 
-    // List (admin sees it, including inactive-capable listing)
+    // List (admin sees it, including inactive-capable listing). NB: el
+    // catálogo ya trae los 6 role-packs sembrados por la migración 022, así
+    // que se busca el perfil recién creado por id en vez de asumir un total
+    // absoluto de 1.
     let resp = app
         .clone()
         .oneshot(get_with_token("/api/admin/profiles", &token))
@@ -67,7 +70,10 @@ async fn admin_can_create_list_get_update_delete_profile() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert!(
+        body["data"].as_array().unwrap().iter().any(|p| p["id"] == id),
+        "el perfil recién creado debe aparecer en el catálogo admin"
+    );
 
     // Get
     let resp = app
@@ -116,7 +122,7 @@ async fn admin_create_rejects_unknown_field_in_definition() {
     let admin = services.user_repo.find_by_username("admin").await.unwrap().unwrap();
     services.user_repo.assign_role(&admin.id, "admin").await.unwrap();
 
-    let mut bad_def = valid_definition("preventa");
+    let mut bad_def = valid_definition("test-preventa");
     bad_def
         .as_object_mut()
         .unwrap()
@@ -127,7 +133,7 @@ async fn admin_create_rejects_unknown_field_in_definition() {
         .oneshot(json_with_token(
             "POST",
             "/api/admin/profiles",
-            json!({ "name": "preventa", "label": "Preventa", "definition": bad_def }),
+            json!({ "name": "test-preventa", "label": "Preventa", "definition": bad_def }),
             &token,
             &csrf,
         ))
@@ -151,9 +157,9 @@ async fn admin_create_enforces_unique_name() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "servimec-tko",
+                "name": "test-tko",
                 "label": "ServiMec TKO",
-                "definition": valid_definition("servimec-tko"),
+                "definition": valid_definition("test-tko"),
             }),
             &token,
             &csrf,
@@ -212,9 +218,9 @@ async fn user_sees_profile_only_with_role_grant_gate_fail_closed() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "ingenieria",
+                "name": "test-ingenieria",
                 "label": "Ingeniería (role-pack)",
-                "definition": valid_definition("ingenieria"),
+                "definition": valid_definition("test-ingenieria"),
             }),
             &admin_token,
             &admin_csrf,
@@ -262,8 +268,13 @@ async fn user_sees_profile_only_with_role_grant_gate_fail_closed() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
     let visible = body["data"].as_array().unwrap();
-    assert_eq!(visible.len(), 1, "con grant de rol, el usuario debe ver el perfil");
-    assert_eq!(visible[0]["id"], profile_id);
+    // NB: el rol 'ingenieria' también trae el role-pack homónimo sembrado por
+    // la migración 022 (grant real del seed), así que se verifica que el
+    // perfil de este test esté presente en vez de asumir que es el único.
+    assert!(
+        visible.iter().any(|p| p["id"] == profile_id),
+        "con grant de rol, el usuario debe ver el perfil de este test"
+    );
 
     // El usuario sin acceso SIGUE sin verlo (el grant es a nivel de rol, no global).
     let resp = app
@@ -290,9 +301,9 @@ async fn user_sees_profile_with_direct_user_grant() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "preventa",
+                "name": "test-preventa",
                 "label": "Preventa MEP",
-                "definition": valid_definition("preventa"),
+                "definition": valid_definition("test-preventa"),
             }),
             &admin_token,
             &admin_csrf,
@@ -352,9 +363,9 @@ async fn inactive_profile_hidden_from_user_endpoint_even_with_grant() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "servimec-tko",
+                "name": "test-tko",
                 "label": "ServiMec TKO",
-                "definition": valid_definition("servimec-tko"),
+                "definition": valid_definition("test-tko"),
             }),
             &admin_token,
             &admin_csrf,
@@ -398,14 +409,19 @@ async fn inactive_profile_hidden_from_user_endpoint_even_with_grant() {
         "perfil inactivo no debe verse aunque haya grant"
     );
 
-    // Pero sigue visible en el catálogo admin (incluye inactivos).
+    // Pero sigue visible en el catálogo admin (incluye inactivos). NB: el
+    // catálogo también trae los 6 role-packs del seed (022), así que se
+    // busca el perfil por id en vez de asumir un total absoluto.
     let resp = app
         .clone()
         .oneshot(get_with_token("/api/admin/profiles", &admin_token))
         .await
         .unwrap();
     let body = body_json(resp).await;
-    assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert!(
+        body["data"].as_array().unwrap().iter().any(|p| p["id"] == profile_id),
+        "el perfil desactivado debe seguir visible en el catálogo admin"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +469,9 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "ingenieria",
+                "name": "test-ingenieria",
                 "label": "Ingeniería (role-pack)",
-                "definition": copilot_definition("ingenieria", "# Ingeniería", "zai/glm-5.1"),
+                "definition": copilot_definition("test-ingenieria", "# Ingeniería", "zai/glm-5.1"),
             }),
             &admin_token,
             &admin_csrf,
@@ -476,7 +492,7 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
     let body = body_json(resp).await;
     let items = body["data"].as_array().unwrap();
     assert!(
-        items.iter().any(|a| a["id"] == "profile:ingenieria"),
+        items.iter().any(|a| a["id"] == "profile:test-ingenieria"),
         "admin debe ver el assistant materializado"
     );
 
@@ -491,7 +507,7 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
     let body = body_json(resp).await;
     let items = body["data"].as_array().unwrap();
     assert!(
-        !items.iter().any(|a| a["id"] == "profile:ingenieria"),
+        !items.iter().any(|a| a["id"] == "profile:test-ingenieria"),
         "sin grant, el usuario no debe ver el assistant gestionado"
     );
 
@@ -518,7 +534,7 @@ async fn copilot_profile_materializes_assistant_gated_like_profiles_endpoint() {
     let items = body["data"].as_array().unwrap();
     let materialized = items
         .iter()
-        .find(|a| a["id"] == "profile:ingenieria")
+        .find(|a| a["id"] == "profile:test-ingenieria")
         .expect("con grant de rol, el usuario debe ver el assistant gestionado");
     assert_eq!(
         materialized["source"], "user",
@@ -545,9 +561,9 @@ async fn updating_profile_soul_md_updates_materialized_assistant_and_remateriali
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "preventa",
+                "name": "test-preventa",
                 "label": "Preventa MEP",
-                "definition": copilot_definition("preventa", "# v1", "zai/glm-5.1"),
+                "definition": copilot_definition("test-preventa", "# v1", "zai/glm-5.1"),
             }),
             &admin_token,
             &admin_csrf,
@@ -563,7 +579,7 @@ async fn updating_profile_soul_md_updates_materialized_assistant_and_remateriali
         .oneshot(json_with_token(
             "PATCH",
             &format!("/api/admin/profiles/{profile_id}"),
-            json!({ "definition": copilot_definition("preventa", "# v1", "zai/glm-5.1") }),
+            json!({ "definition": copilot_definition("test-preventa", "# v1", "zai/glm-5.1") }),
             &admin_token,
             &admin_csrf,
         ))
@@ -577,7 +593,7 @@ async fn updating_profile_soul_md_updates_materialized_assistant_and_remateriali
         .oneshot(json_with_token(
             "PATCH",
             &format!("/api/admin/profiles/{profile_id}"),
-            json!({ "definition": copilot_definition("preventa", "# v2 cambiado", "zai/glm-5.1") }),
+            json!({ "definition": copilot_definition("test-preventa", "# v2 cambiado", "zai/glm-5.1") }),
             &admin_token,
             &admin_csrf,
         ))
@@ -587,7 +603,7 @@ async fn updating_profile_soul_md_updates_materialized_assistant_and_remateriali
 
     let resp = app
         .clone()
-        .oneshot(get_with_token("/api/assistants/profile:preventa", &admin_token))
+        .oneshot(get_with_token("/api/assistants/profile:test-preventa", &admin_token))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -610,9 +626,9 @@ async fn deactivating_profile_removes_materialized_assistant_from_catalog() {
             "POST",
             "/api/admin/profiles",
             json!({
-                "name": "servimec-tko",
+                "name": "test-tko",
                 "label": "ServiMec TKO",
-                "definition": copilot_definition("servimec-tko", "# TKO", "zai/glm-5.1"),
+                "definition": copilot_definition("test-tko", "# TKO", "zai/glm-5.1"),
             }),
             &admin_token,
             &admin_csrf,
@@ -633,7 +649,7 @@ async fn deactivating_profile_removes_materialized_assistant_from_catalog() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|a| a["id"] == "profile:servimec-tko")
+            .any(|a| a["id"] == "profile:test-tko")
     );
 
     let resp = app
@@ -660,7 +676,7 @@ async fn deactivating_profile_removes_materialized_assistant_from_catalog() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|a| a["id"] == "profile:servimec-tko"),
+            .any(|a| a["id"] == "profile:test-tko"),
         "el assistant materializado debe retirarse al desactivar el perfil"
     );
 }

@@ -1,0 +1,8 @@
+email,nombre,rol,perfil,techo_gasto_usd
+ejemplo.ingeniero@ingelmec.com,Ejemplo Ingeniero,ingenieria,,8.0
+ejemplo.tecnico@ingelmec.com,Ejemplo Tecnico de Campo,tecnica,,6.0
+ejemplo.comercial@ingelmec.com,Ejemplo Comercial,comercial,,5.0
+ejemplo.gerente@ingelmec.com,Ejemplo Gerente,gerencia,,10.0
+ejemplo.contador@ingelmec.com,Ejemplo Financiera,financiera,,5.0
+ejemplo.admin@ingelmec.com,Ejemplo Admin RRHH,admin,,5.0
+ejemplo.excepcion@ingelmec.com,Ejemplo Con Perfil Extra,comercial,servimec-tko,6.0
