@@ -7,6 +7,10 @@ edition.workspace = true
 name = "aioncore"
 path = "src/main.rs"
 
+[[bin]]
+name = "seed_role_pack_users"
+path = "src/bin/seed_role_pack_users.rs"
+
 [features]
 default = ["telegram", "lark", "dingtalk", "weixin"]
 telegram = ["aionui-channel/telegram"]

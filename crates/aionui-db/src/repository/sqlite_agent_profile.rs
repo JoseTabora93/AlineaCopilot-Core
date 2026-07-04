@@ -186,19 +186,19 @@ mod tests {
     #[tokio::test]
     async fn create_and_get() {
         let repo = setup().await;
-        let p = repo.create(new_profile("ingenieria")).await.unwrap();
-        assert_eq!(p.name, "ingenieria");
+        let p = repo.create(new_profile("test-ingenieria")).await.unwrap();
+        assert_eq!(p.name, "test-ingenieria");
         assert!(p.is_active);
         let got = repo.get(&p.id).await.unwrap().unwrap();
         assert_eq!(got.id, p.id);
-        assert_eq!(got.label, "Label for ingenieria");
+        assert_eq!(got.label, "Label for test-ingenieria");
     }
 
     #[tokio::test]
     async fn get_by_name_roundtrip() {
         let repo = setup().await;
-        let p = repo.create(new_profile("preventa")).await.unwrap();
-        let got = repo.get_by_name("preventa").await.unwrap().unwrap();
+        let p = repo.create(new_profile("test-preventa")).await.unwrap();
+        let got = repo.get_by_name("test-preventa").await.unwrap().unwrap();
         assert_eq!(got.id, p.id);
         assert!(repo.get_by_name("no-existe").await.unwrap().is_none());
     }
@@ -206,16 +206,16 @@ mod tests {
     #[tokio::test]
     async fn create_enforces_unique_name() {
         let repo = setup().await;
-        repo.create(new_profile("ingenieria")).await.unwrap();
-        let err = repo.create(new_profile("ingenieria")).await.unwrap_err();
+        repo.create(new_profile("test-ingenieria")).await.unwrap();
+        let err = repo.create(new_profile("test-ingenieria")).await.unwrap_err();
         assert!(matches!(err, DbError::Conflict(_)), "expected Conflict, got: {err:?}");
     }
 
     #[tokio::test]
     async fn list_all_filters_inactive() {
         let repo = setup().await;
-        let p1 = repo.create(new_profile("a")).await.unwrap();
-        let _p2 = repo.create(new_profile("b")).await.unwrap();
+        let p1 = repo.create(new_profile("test-a")).await.unwrap();
+        let _p2 = repo.create(new_profile("test-b")).await.unwrap();
         repo.update(
             &p1.id,
             AgentProfileUpdate {
@@ -225,16 +225,36 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(repo.list_all(false).await.unwrap().len(), 1);
-        assert_eq!(repo.list_all(true).await.unwrap().len(), 2);
+
+        // NB: init_database_memory() siembra los 6 role-packs de la migración
+        // 022 (todos is_active=1), así que list_all() ya no arranca en 0 --
+        // se filtra a los fixtures de este test (nombres "test-*") en vez de
+        // asumir un conteo absoluto.
+        let active_test_profiles: Vec<_> = repo
+            .list_all(false)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.name.starts_with("test-"))
+            .collect();
+        assert_eq!(active_test_profiles.len(), 1);
+
+        let all_test_profiles: Vec<_> = repo
+            .list_all(true)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.name.starts_with("test-"))
+            .collect();
+        assert_eq!(all_test_profiles.len(), 2);
     }
 
     #[tokio::test]
     async fn list_by_ids_returns_only_requested_and_active() {
         let repo = setup().await;
-        let p1 = repo.create(new_profile("a")).await.unwrap();
-        let p2 = repo.create(new_profile("b")).await.unwrap();
-        let _p3 = repo.create(new_profile("c")).await.unwrap();
+        let p1 = repo.create(new_profile("test-a")).await.unwrap();
+        let p2 = repo.create(new_profile("test-b")).await.unwrap();
+        let _p3 = repo.create(new_profile("test-c")).await.unwrap();
         repo.update(
             &p2.id,
             AgentProfileUpdate {
@@ -259,7 +279,7 @@ mod tests {
     #[tokio::test]
     async fn update_partial_and_not_found() {
         let repo = setup().await;
-        let p = repo.create(new_profile("ingenieria")).await.unwrap();
+        let p = repo.create(new_profile("test-ingenieria")).await.unwrap();
         repo.update(
             &p.id,
             AgentProfileUpdate {
@@ -289,7 +309,7 @@ mod tests {
     #[tokio::test]
     async fn update_definition_and_is_active() {
         let repo = setup().await;
-        let p = repo.create(new_profile("preventa")).await.unwrap();
+        let p = repo.create(new_profile("test-preventa")).await.unwrap();
         repo.update(
             &p.id,
             AgentProfileUpdate {
@@ -308,7 +328,7 @@ mod tests {
     #[tokio::test]
     async fn delete_removes_row() {
         let repo = setup().await;
-        let p = repo.create(new_profile("ingenieria")).await.unwrap();
+        let p = repo.create(new_profile("test-ingenieria")).await.unwrap();
         repo.delete(&p.id).await.unwrap();
         assert!(repo.get(&p.id).await.unwrap().is_none());
 

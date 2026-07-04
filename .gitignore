@@ -569,6 +569,11 @@ flamegraph.svg
 # Runtime data (never commit DBs)
 data/
 
+# CSV real de empleados (PII) para el seed de la tarea A6 -- solo se commitea
+# el template scripts/usuarios_ingelmec.example.csv, nunca el CSV con datos
+# reales de personas.
+scripts/usuarios_ingelmec.csv
+
 
 .graphify_python
 .graphify_detect.json

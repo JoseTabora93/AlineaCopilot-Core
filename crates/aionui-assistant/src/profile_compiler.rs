@@ -309,7 +309,7 @@ mod tests {
         let (_db, profile_repo, definition_repo) = setup().await;
         let profile = create_profile(
             &*profile_repo,
-            "ingenieria",
+            "test-ingenieria",
             &["copilot"],
             "# Ingeniería",
             "zai/glm-5.1",
@@ -324,7 +324,7 @@ mod tests {
             .await
             .unwrap()
             .expect("assistant definition must exist");
-        assert_eq!(def.assistant_key, "profile:ingenieria");
+        assert_eq!(def.assistant_key, "profile:test-ingenieria");
         assert_eq!(def.source, "generated");
         assert_eq!(def.owner_type, "system");
         assert_eq!(def.rule_resource_type, "inline");
@@ -335,14 +335,14 @@ mod tests {
         assert_eq!(def.default_mcp_ids, r#"["ingelmec-kb"]"#);
 
         // Also reachable via the assistant_key that /api/assistants uses.
-        let by_key = definition_repo.get_by_key("profile:ingenieria").await.unwrap();
+        let by_key = definition_repo.get_by_key("profile:test-ingenieria").await.unwrap();
         assert!(by_key.is_some());
     }
 
     #[tokio::test]
     async fn ignores_profile_without_copilot_engine() {
         let (_db, profile_repo, definition_repo) = setup().await;
-        let profile = create_profile(&*profile_repo, "servimec-tko", &["hermes"], "# TKO", "zai/glm-5.1").await;
+        let profile = create_profile(&*profile_repo, "test-tko", &["hermes"], "# TKO", "zai/glm-5.1").await;
 
         let outcome = materialize_profile(&*definition_repo, &profile).await.unwrap();
         assert_eq!(outcome, MaterializeOutcome::NotApplicable);
@@ -358,7 +358,14 @@ mod tests {
     #[tokio::test]
     async fn rematerializing_unchanged_profile_is_noop_and_does_not_bump_updated_at() {
         let (_db, profile_repo, definition_repo) = setup().await;
-        let profile = create_profile(&*profile_repo, "preventa", &["copilot"], "# Preventa", "zai/glm-5.1").await;
+        let profile = create_profile(
+            &*profile_repo,
+            "test-preventa",
+            &["copilot"],
+            "# Preventa",
+            "zai/glm-5.1",
+        )
+        .await;
 
         materialize_profile(&*definition_repo, &profile).await.unwrap();
         let first = definition_repo
@@ -387,7 +394,7 @@ mod tests {
     #[tokio::test]
     async fn changing_soul_md_updates_the_materialized_assistant() {
         let (_db, profile_repo, definition_repo) = setup().await;
-        let profile = create_profile(&*profile_repo, "preventa", &["copilot"], "# v1", "zai/glm-5.1").await;
+        let profile = create_profile(&*profile_repo, "test-preventa", &["copilot"], "# v1", "zai/glm-5.1").await;
         materialize_profile(&*definition_repo, &profile).await.unwrap();
         let before = definition_repo
             .get_by_source_ref("generated", &profile.id)
@@ -401,7 +408,7 @@ mod tests {
                 aionui_db::AgentProfileUpdate {
                     label: None,
                     definition: Some(definition_json(
-                        "preventa",
+                        "test-preventa",
                         &["copilot"],
                         "# v2 (cambio real)",
                         "zai/glm-5.1",
@@ -429,7 +436,14 @@ mod tests {
     #[tokio::test]
     async fn deactivating_profile_retires_the_materialized_assistant() {
         let (_db, profile_repo, definition_repo) = setup().await;
-        let profile = create_profile(&*profile_repo, "preventa", &["copilot"], "# Preventa", "zai/glm-5.1").await;
+        let profile = create_profile(
+            &*profile_repo,
+            "test-preventa",
+            &["copilot"],
+            "# Preventa",
+            "zai/glm-5.1",
+        )
+        .await;
         materialize_profile(&*definition_repo, &profile).await.unwrap();
         assert!(
             definition_repo
@@ -473,7 +487,7 @@ mod tests {
         let (_db, profile_repo, definition_repo) = setup().await;
         let profile = create_profile(
             &*profile_repo,
-            "ingenieria",
+            "test-ingenieria",
             &["hermes", "copilot"],
             "# Ingeniería",
             "zai/glm-5.1",
@@ -494,7 +508,7 @@ mod tests {
                 aionui_db::AgentProfileUpdate {
                     label: None,
                     definition: Some(definition_json(
-                        "ingenieria",
+                        "test-ingenieria",
                         &["hermes"],
                         "# Ingeniería",
                         "zai/glm-5.1",

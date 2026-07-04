@@ -202,9 +202,9 @@ mod tests {
         let (gate, profile_repo, definition_repo, _acl) = setup().await;
         let profile = profile_repo
             .create(NewAgentProfile {
-                name: "ingenieria".into(),
-                label: "Ingeniería".into(),
-                definition: definition_json("ingenieria"),
+                name: "test-ingenieria".into(),
+                label: "Test Ingeniería".into(),
+                definition: definition_json("test-ingenieria"),
             })
             .await
             .unwrap();
@@ -212,7 +212,7 @@ mod tests {
             .await
             .unwrap();
 
-        let items = vec![mk_response("profile:ingenieria")];
+        let items = vec![mk_response("profile:test-ingenieria")];
         let u = user("u1", &[]);
         let visible = filter_visible_assistants(&gate, &u, items).await.unwrap();
         assert!(
@@ -226,9 +226,9 @@ mod tests {
         let (gate, profile_repo, definition_repo, acl_repo) = setup().await;
         let profile = profile_repo
             .create(NewAgentProfile {
-                name: "ingenieria".into(),
-                label: "Ingeniería".into(),
-                definition: definition_json("ingenieria"),
+                name: "test-ingenieria".into(),
+                label: "Test Ingeniería".into(),
+                definition: definition_json("test-ingenieria"),
             })
             .await
             .unwrap();
@@ -236,19 +236,19 @@ mod tests {
             .await
             .unwrap();
         acl_repo
-            .grant("agent_profile", &profile.id, "ingenieria", "read")
+            .grant("agent_profile", &profile.id, "test-role", "read")
             .await
             .unwrap();
 
-        let items = vec![mk_response("profile:ingenieria")];
-        let u = user("u1", &["ingenieria"]);
+        let items = vec![mk_response("profile:test-ingenieria")];
+        let u = user("u1", &["test-role"]);
         let visible = filter_visible_assistants(&gate, &u, items).await.unwrap();
         assert_eq!(
             visible.len(),
             1,
             "con grant de rol, el usuario debe ver el assistant gestionado"
         );
-        assert_eq!(visible[0].id, "profile:ingenieria");
+        assert_eq!(visible[0].id, "profile:test-ingenieria");
     }
 
     #[tokio::test]
@@ -256,9 +256,9 @@ mod tests {
         let (gate, profile_repo, definition_repo, _acl) = setup().await;
         let profile = profile_repo
             .create(NewAgentProfile {
-                name: "ingenieria".into(),
-                label: "Ingeniería".into(),
-                definition: definition_json("ingenieria"),
+                name: "test-ingenieria".into(),
+                label: "Test Ingeniería".into(),
+                definition: definition_json("test-ingenieria"),
             })
             .await
             .unwrap();
@@ -266,7 +266,7 @@ mod tests {
             .await
             .unwrap();
 
-        let items = vec![mk_response("profile:ingenieria")];
+        let items = vec![mk_response("profile:test-ingenieria")];
         let admin = user("admin1", &["admin"]);
         let visible = filter_visible_assistants(&gate, &admin, items).await.unwrap();
         assert_eq!(visible.len(), 1, "admin ve el catálogo sin necesitar grant explícito");
